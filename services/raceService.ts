@@ -53,7 +53,7 @@ export const raceService = {
       startTime: Date;
     }
   ): Promise<string> {
-    const docRef = await addDoc(collection(db, 'races'), {
+    const payload = {
       ...data,
       startTime: Timestamp.fromDate(data.startTime),
       status: 'draft',
@@ -63,8 +63,16 @@ export const raceService = {
       checkpoints: [],
       participantCount: 0,
       createdAt: serverTimestamp(),
-    });
-    return docRef.id;
+    };
+    console.log('[raceService.createRace] payload:', JSON.stringify({ ...payload, startTime: payload.startTime.toDate().toISOString(), createdAt: 'serverTimestamp' }));
+    try {
+      const docRef = await addDoc(collection(db, 'races'), payload);
+      console.log('[raceService.createRace] success, docId:', docRef.id);
+      return docRef.id;
+    } catch (error) {
+      console.error('[raceService.createRace] Firestore error:', error);
+      throw error;
+    }
   },
 
   async updateRace(

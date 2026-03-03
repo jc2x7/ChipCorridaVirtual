@@ -62,7 +62,10 @@ export default function CreateRaceScreen() {
   };
 
   const onSubmit = async (data: FormData) => {
-    if (!user) return;
+    if (!user) {
+      console.error('[CreateRace] onSubmit: user is null/undefined');
+      return;
+    }
     setLoading(true);
     try {
       // Parse date/time
@@ -70,21 +73,29 @@ export default function CreateRaceScreen() {
       const [hour, minute] = data.startTime.split(':').map(Number);
       const startTime = new Date(year, month - 1, day, hour, minute);
 
+      console.log('[CreateRace] parsed startTime:', startTime, 'isNaN:', isNaN(startTime.getTime()));
+      console.log('[CreateRace] form data:', { name: data.name, description: data.description, startDate: data.startDate, startTime: data.startTime });
+      console.log('[CreateRace] user.id:', user.id);
+
       if (isNaN(startTime.getTime())) {
         Alert.alert('Erro', 'Data ou hora inválida.');
         return;
       }
 
+      console.log('[CreateRace] calling raceService.createRace...');
       const raceId = await raceService.createRace(user.id, {
         name: data.name,
         description: data.description ?? '',
         startTime,
       });
+      console.log('[CreateRace] race created, raceId:', raceId);
 
       // Upload photo if selected
       if (photoUri) {
         setUploadingPhoto(true);
+        console.log('[CreateRace] uploading photo, uri:', photoUri);
         const photoUrl = await raceService.uploadRacePhoto(raceId, photoUri);
+        console.log('[CreateRace] photo uploaded, url:', photoUrl);
         await raceService.updateRace(raceId, { photoUrl });
         setUploadingPhoto(false);
       }
@@ -100,6 +111,11 @@ export default function CreateRaceScreen() {
         },
       ]);
     } catch (error) {
+      console.error('[CreateRace] ERROR creating race:', error);
+      if (error instanceof Error) {
+        console.error('[CreateRace] message:', error.message);
+        console.error('[CreateRace] stack:', error.stack);
+      }
       Alert.alert('Erro', 'Não foi possível criar a corrida. Tente novamente.');
     } finally {
       setLoading(false);
