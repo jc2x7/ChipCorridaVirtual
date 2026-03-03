@@ -176,11 +176,22 @@ export const raceService = {
   },
 
   async uploadRacePhoto(raceId: string, uri: string): Promise<string> {
-    const response = await fetch(uri);
-    const blob = await response.blob();
+    // fetch() + blob() doesn't work with local file URIs in React Native.
+    // XMLHttpRequest is the only reliable way to get a real Blob from a local URI.
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.onload = () => resolve(xhr.response as Blob);
+      xhr.onerror = () => reject(new Error('Falha ao ler o arquivo de imagem'));
+      xhr.responseType = 'blob';
+      xhr.open('GET', uri, true);
+      xhr.send(null);
+    });
     const storageRef = ref(storage, `races/${raceId}/cover.jpg`);
     await uploadBytes(storageRef, blob);
-    return getDownloadURL(storageRef);
+    const url = await getDownloadURL(storageRef);
+    // Release the blob memory
+    (blob as unknown as { close?: () => void }).close?.();
+    return url;
   },
 
   async deleteRacePhoto(raceId: string): Promise<void> {
