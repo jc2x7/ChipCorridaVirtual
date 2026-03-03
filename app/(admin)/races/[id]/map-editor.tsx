@@ -100,16 +100,25 @@ export default function MapEditorScreen() {
     );
   };
 
+  const mapReady = useRef(false);
+
   useEffect(() => {
-    if (!id) return;
-    raceService.getRace(id).then((r) => {
-      setRace(r);
-      if (r) {
-        setRoute(r.route);
-        setCheckpoints(r.checkpoints);
-      }
-      setLoading(false);
-    });
+    if (!id) { setLoading(false); return; }
+    const unsub = raceService.subscribeToRace(
+      id,
+      (r) => {
+        setRace(r);
+        // Only initialise route/checkpoints once — don't overwrite user edits
+        if (r && !mapReady.current) {
+          setRoute(r.route);
+          setCheckpoints(r.checkpoints);
+          mapReady.current = true;
+        }
+        setLoading(false);
+      },
+      () => setLoading(false)
+    );
+    return unsub;
   }, [id]);
 
   const handleMapPress = (e: MapPressEvent) => {
@@ -295,6 +304,9 @@ export default function MapEditorScreen() {
     }
   };
 
+  // useMemo must be called before any early return (Rules of Hooks)
+  const distanceKm = useMemo(() => calcRouteDistanceKm(route), [route]);
+
   if (loading || !race) return <Loading fullScreen />;
 
   const initialRegion = {
@@ -303,8 +315,6 @@ export default function MapEditorScreen() {
     latitudeDelta: 0.05,
     longitudeDelta: 0.05,
   };
-
-  const distanceKm = useMemo(() => calcRouteDistanceKm(route), [route]);
 
   const sortedCheckpoints = [...checkpoints].sort(
     (a, b) => a.order - b.order
