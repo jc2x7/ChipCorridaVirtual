@@ -19,6 +19,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
+import { FirebaseStatusBadge } from '@/components/ui/FirebaseStatusBadge';
 
 const schema = z.object({
   email: z.string().email('Email inválido'),
@@ -75,6 +76,7 @@ export default function LoginScreen() {
           <Text style={styles.subtitle}>
             Rastreamento de corridas sem chip físico
           </Text>
+          <FirebaseStatusBadge />
         </View>
 
         {/* Form */}
