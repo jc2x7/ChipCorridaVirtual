@@ -15,6 +15,7 @@ import MapView, {
   Marker,
   Circle,
   MapPressEvent,
+  Region,
   PROVIDER_GOOGLE,
 } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
@@ -58,6 +59,23 @@ export default function MapEditorScreen() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const mapRef = useRef<MapView>(null);
+  const currentRegion = useRef<Region | null>(null);
+
+  const zoomIn = () => {
+    const base = currentRegion.current ?? initialRegion;
+    mapRef.current?.animateToRegion(
+      { ...base, latitudeDelta: base.latitudeDelta / 2, longitudeDelta: base.longitudeDelta / 2 },
+      250
+    );
+  };
+
+  const zoomOut = () => {
+    const base = currentRegion.current ?? initialRegion;
+    mapRef.current?.animateToRegion(
+      { ...base, latitudeDelta: base.latitudeDelta * 2, longitudeDelta: base.longitudeDelta * 2 },
+      250
+    );
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -275,6 +293,7 @@ export default function MapEditorScreen() {
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
         initialRegion={initialRegion}
         onPress={handleMapPress}
+        onRegionChangeComplete={(region) => { currentRegion.current = region; }}
         showsUserLocation
         showsMyLocationButton={false}
       >
@@ -403,6 +422,17 @@ export default function MapEditorScreen() {
           </View>
         )}
       </SafeAreaView>
+
+      {/* Zoom Controls */}
+      <View style={styles.zoomControls}>
+        <TouchableOpacity onPress={zoomIn} style={styles.zoomBtn}>
+          <Ionicons name="add" size={22} color={Colors.text} />
+        </TouchableOpacity>
+        <View style={styles.zoomDivider} />
+        <TouchableOpacity onPress={zoomOut} style={styles.zoomBtn}>
+          <Ionicons name="remove" size={22} color={Colors.text} />
+        </TouchableOpacity>
+      </View>
 
       {/* Mode Selector */}
       <View style={styles.modeBar}>
@@ -630,4 +660,28 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   actionBtnText: { fontSize: 13, fontWeight: '600' },
+  zoomControls: {
+    position: 'absolute',
+    right: 12,
+    top: 120,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 4,
+    overflow: 'hidden',
+  },
+  zoomBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zoomDivider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginHorizontal: 8,
+  },
 });
