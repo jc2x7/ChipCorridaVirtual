@@ -40,6 +40,7 @@ export default function EditRaceScreen() {
   const [race, setRace] = useState<Race | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
 
@@ -72,7 +73,8 @@ export default function EditRaceScreen() {
       })
       .catch((err) => {
         console.error('[EditRace] load error:', err);
-        setNotFound(true);
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(msg);
       })
       .finally(() => setLoading(false));
   }, [id]);
@@ -138,6 +140,21 @@ export default function EditRaceScreen() {
   };
 
   if (loading) return <Loading fullScreen />;
+
+  if (loadError) {
+    return (
+      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Ionicons name="cloud-offline-outline" size={48} color={Colors.error} />
+        <Text style={{ fontSize: 16, color: Colors.textMuted, marginTop: 12, textAlign: 'center', paddingHorizontal: 24 }}>
+          Erro ao carregar corrida
+        </Text>
+        <Text style={{ fontSize: 13, color: Colors.textMuted, marginTop: 4, textAlign: 'center', paddingHorizontal: 32 }}>
+          {loadError}
+        </Text>
+        <Button title="Voltar" onPress={() => router.back()} size="sm" style={{ marginTop: 16 }} />
+      </SafeAreaView>
+    );
+  }
 
   if (notFound || !race) {
     return (

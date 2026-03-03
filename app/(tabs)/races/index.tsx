@@ -19,13 +19,21 @@ import { Colors } from '@/constants/colors';
 export default function RacesScreen() {
   const [races, setRaces] = useState<Race[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    const unsubscribe = raceService.subscribeToPublishedRaces((r) => {
-      setRaces(r);
-      setLoading(false);
-    });
+    setError(false);
+    const unsubscribe = raceService.subscribeToPublishedRaces(
+      (r) => {
+        setRaces(r);
+        setLoading(false);
+      },
+      () => {
+        setLoading(false);
+        setError(true);
+      }
+    );
     return unsubscribe;
   }, []);
 
@@ -36,6 +44,16 @@ export default function RacesScreen() {
   );
 
   if (loading) return <Loading fullScreen message="Carregando corridas..." />;
+
+  if (error) {
+    return (
+      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]} edges={['top']}>
+        <Ionicons name="cloud-offline-outline" size={48} color={Colors.textMuted} />
+        <Text style={[styles.emptyTitle, { marginTop: 12 }]}>Erro ao carregar corridas</Text>
+        <Text style={styles.emptyText}>Verifique sua conexão e tente novamente</Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

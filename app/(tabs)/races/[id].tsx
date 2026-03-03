@@ -76,7 +76,21 @@ export default function RaceDetailScreen() {
     router.push(`/(tabs)/races/track/${id}`);
   };
 
-  if (loading || !race) return <Loading fullScreen message="Carregando..." />;
+  if (loading) return <Loading fullScreen message="Carregando..." />;
+
+  if (!race) {
+    return (
+      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Ionicons name="alert-circle-outline" size={48} color={Colors.textMuted} />
+        <Text style={{ fontSize: 16, color: Colors.textMuted, marginTop: 12 }}>
+          Corrida não encontrada
+        </Text>
+        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 16 }}>
+          <Text style={{ color: Colors.primary, fontWeight: '700', fontSize: 15 }}>Voltar</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   const formattedDate = format(race.startTime, "EEEE, dd 'de' MMMM 'de' yyyy 'às' HH:mm", {
     locale: ptBR,
