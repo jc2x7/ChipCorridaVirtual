@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Tabs, router } from 'expo-router';
 import { TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -5,7 +6,13 @@ import { useAuthStore } from '@/stores/authStore';
 import { Colors } from '@/constants/colors';
 
 export default function TabsLayout() {
-  const { user } = useAuthStore();
+  const { user, initialized } = useAuthStore();
+
+  useEffect(() => {
+    if (initialized && !user) {
+      router.replace('/(auth)/login');
+    }
+  }, [user, initialized]);
 
   return (
     <Tabs
