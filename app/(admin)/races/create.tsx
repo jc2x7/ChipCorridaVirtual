@@ -15,6 +15,11 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker, {
+  DateTimePickerEvent,
+} from '@react-native-community/datetimepicker';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { Ionicons } from '@expo/vector-icons';
 import { raceService } from '@/services/raceService';
 import { useAuthStore } from '@/stores/authStore';
@@ -25,8 +30,6 @@ import { Colors } from '@/constants/colors';
 const schema = z.object({
   name: z.string().min(3, 'Nome deve ter no mínimo 3 caracteres'),
   description: z.string().optional(),
-  startDate: z.string().min(1, 'Data de largada obrigatória'),
-  startTime: z.string().min(1, 'Hora de largada obrigatória'),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -37,16 +40,24 @@ export default function CreateRaceScreen() {
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
+  // Date/time picker state
+  const [startDate, setStartDate] = useState<Date>(new Date());
+  const [startTimeDate, setStartTimeDate] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(7, 0, 0, 0);
+    return d;
+  });
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [dateSelected, setDateSelected] = useState(false);
+  const [timeSelected, setTimeSelected] = useState(false);
+
   const {
     control,
     handleSubmit,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: {
-      startDate: '',
-      startTime: '',
-    },
   });
 
   const pickImage = async () => {
@@ -61,41 +72,53 @@ export default function CreateRaceScreen() {
     }
   };
 
+  const onDateChange = (_event: DateTimePickerEvent, selected?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (selected) {
+      setStartDate(selected);
+      setDateSelected(true);
+    }
+  };
+
+  const onTimeChange = (_event: DateTimePickerEvent, selected?: Date) => {
+    if (Platform.OS === 'android') setShowTimePicker(false);
+    if (selected) {
+      setStartTimeDate(selected);
+      setTimeSelected(true);
+    }
+  };
+
   const onSubmit = async (data: FormData) => {
-    if (!user) {
-      console.error('[CreateRace] onSubmit: user is null/undefined');
+    if (!user) return;
+
+    if (!dateSelected) {
+      Alert.alert('Erro', 'Selecione a data de largada.');
       return;
     }
+    if (!timeSelected) {
+      Alert.alert('Erro', 'Selecione a hora de largada.');
+      return;
+    }
+
     setLoading(true);
     try {
-      // Parse date/time
-      const [year, month, day] = data.startDate.split('-').map(Number);
-      const [hour, minute] = data.startTime.split(':').map(Number);
-      const startTime = new Date(year, month - 1, day, hour, minute);
+      const startTime = new Date(
+        startDate.getFullYear(),
+        startDate.getMonth(),
+        startDate.getDate(),
+        startTimeDate.getHours(),
+        startTimeDate.getMinutes()
+      );
 
-      console.log('[CreateRace] parsed startTime:', startTime, 'isNaN:', isNaN(startTime.getTime()));
-      console.log('[CreateRace] form data:', { name: data.name, description: data.description, startDate: data.startDate, startTime: data.startTime });
-      console.log('[CreateRace] user.id:', user.id);
-
-      if (isNaN(startTime.getTime())) {
-        Alert.alert('Erro', 'Data ou hora inválida.');
-        return;
-      }
-
-      console.log('[CreateRace] calling raceService.createRace...');
       const raceId = await raceService.createRace(user.id, {
         name: data.name,
         description: data.description ?? '',
         startTime,
       });
-      console.log('[CreateRace] race created, raceId:', raceId);
 
-      // Upload photo if selected
       if (photoUri) {
         setUploadingPhoto(true);
-        console.log('[CreateRace] uploading photo, uri:', photoUri);
         const photoUrl = await raceService.uploadRacePhoto(raceId, photoUri);
-        console.log('[CreateRace] photo uploaded, url:', photoUrl);
         await raceService.updateRace(raceId, { photoUrl });
         setUploadingPhoto(false);
       }
@@ -111,20 +134,13 @@ export default function CreateRaceScreen() {
         },
       ]);
     } catch (error) {
-      console.error('[CreateRace] ERROR creating race:', error);
-      if (error instanceof Error) {
-        console.error('[CreateRace] message:', error.message);
-        console.error('[CreateRace] stack:', error.stack);
-      }
+      console.error('[CreateRace] ERROR:', error);
       Alert.alert('Erro', 'Não foi possível criar a corrida. Tente novamente.');
     } finally {
       setLoading(false);
       setUploadingPhoto(false);
     }
   };
-
-  // Get today's date in YYYY-MM-DD format
-  const today = new Date().toISOString().split('T')[0];
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -152,7 +168,7 @@ export default function CreateRaceScreen() {
                 Adicionar foto de capa
               </Text>
               <Text style={styles.photoPlaceholderSub}>
-                Opcional • 16:9 recomendado
+                Opcional - 16:9 recomendado
               </Text>
             </View>
           )}
@@ -197,44 +213,108 @@ export default function CreateRaceScreen() {
           )}
         />
 
+        {/* Date & Time Pickers */}
         <View style={styles.dateTimeRow}>
           <View style={{ flex: 1 }}>
-            <Controller
-              control={control}
-              name="startDate"
-              render={({ field: { onChange, value } }) => (
-                <Input
-                  label="Data de largada *"
-                  placeholder={today}
-                  value={value}
-                  onChangeText={onChange}
-                  keyboardType={Platform.OS === 'ios' ? 'default' : 'default'}
-                  hint="Formato: AAAA-MM-DD"
-                  leftIcon="calendar-outline"
-                  error={errors.startDate?.message}
-                />
-              )}
-            />
+            <Text style={styles.label}>Data de largada *</Text>
+            <TouchableOpacity
+              onPress={() => setShowDatePicker(true)}
+              style={[styles.pickerBtn, !dateSelected && styles.pickerBtnEmpty]}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="calendar-outline"
+                size={18}
+                color={dateSelected ? Colors.primary : Colors.textMuted}
+              />
+              <Text
+                style={[
+                  styles.pickerBtnText,
+                  !dateSelected && styles.pickerBtnPlaceholder,
+                ]}
+              >
+                {dateSelected
+                  ? format(startDate, "dd 'de' MMM, yyyy", { locale: ptBR })
+                  : 'Selecionar data'}
+              </Text>
+            </TouchableOpacity>
           </View>
+
           <View style={{ flex: 1 }}>
-            <Controller
-              control={control}
-              name="startTime"
-              render={({ field: { onChange, value } }) => (
-                <Input
-                  label="Hora *"
-                  placeholder="07:00"
-                  value={value}
-                  onChangeText={onChange}
-                  keyboardType="numbers-and-punctuation"
-                  hint="Formato: HH:MM"
-                  leftIcon="time-outline"
-                  error={errors.startTime?.message}
-                />
-              )}
-            />
+            <Text style={styles.label}>Hora *</Text>
+            <TouchableOpacity
+              onPress={() => setShowTimePicker(true)}
+              style={[styles.pickerBtn, !timeSelected && styles.pickerBtnEmpty]}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="time-outline"
+                size={18}
+                color={timeSelected ? Colors.primary : Colors.textMuted}
+              />
+              <Text
+                style={[
+                  styles.pickerBtnText,
+                  !timeSelected && styles.pickerBtnPlaceholder,
+                ]}
+              >
+                {timeSelected
+                  ? format(startTimeDate, 'HH:mm')
+                  : 'Selecionar hora'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
+
+        {/* Native Date Picker */}
+        {showDatePicker && (
+          <View style={styles.pickerContainer}>
+            <DateTimePicker
+              value={startDate}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+              minimumDate={new Date()}
+              onChange={onDateChange}
+              locale="pt-BR"
+            />
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                onPress={() => {
+                  setShowDatePicker(false);
+                  setDateSelected(true);
+                }}
+                style={styles.pickerDoneBtn}
+              >
+                <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Native Time Picker */}
+        {showTimePicker && (
+          <View style={styles.pickerContainer}>
+            <DateTimePicker
+              value={startTimeDate}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'clock'}
+              is24Hour
+              onChange={onTimeChange}
+              locale="pt-BR"
+            />
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                onPress={() => {
+                  setShowTimePicker(false);
+                  setTimeSelected(true);
+                }}
+                style={styles.pickerDoneBtn}
+              >
+                <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         <View style={styles.hint}>
           <Ionicons
@@ -298,7 +378,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dateTimeRow: { flexDirection: 'row', gap: 12 },
+  dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    marginBottom: 6,
+  },
+  pickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+  },
+  pickerBtnEmpty: {
+    borderColor: Colors.border,
+  },
+  pickerBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  pickerBtnPlaceholder: {
+    fontWeight: '400',
+    color: Colors.textMuted,
+  },
+  pickerContainer: {
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  pickerDoneBtn: {
+    alignSelf: 'flex-end',
+    backgroundColor: Colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  pickerDoneBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   hint: {
     flexDirection: 'row',
     alignItems: 'flex-start',

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -24,6 +24,29 @@ import { raceService } from '@/services/raceService';
 import { Colors } from '@/constants/colors';
 import { Loading } from '@/components/ui/Loading';
 import { Button } from '@/components/ui/Button';
+
+function haversineDistance(
+  p1: { latitude: number; longitude: number },
+  p2: { latitude: number; longitude: number }
+): number {
+  const R = 6371; // km
+  const dLat = ((p2.latitude - p1.latitude) * Math.PI) / 180;
+  const dLon = ((p2.longitude - p1.longitude) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((p1.latitude * Math.PI) / 180) *
+      Math.cos((p2.latitude * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function calcRouteDistanceKm(points: RoutePoint[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += haversineDistance(points[i - 1], points[i]);
+  }
+  return total;
+}
 
 type EditorMode = 'route' | 'checkpoint' | 'start' | 'finish';
 
@@ -281,6 +304,8 @@ export default function MapEditorScreen() {
     longitudeDelta: 0.05,
   };
 
+  const distanceKm = useMemo(() => calcRouteDistanceKm(route), [route]);
+
   const sortedCheckpoints = [...checkpoints].sort(
     (a, b) => a.order - b.order
   );
@@ -468,8 +493,12 @@ export default function MapEditorScreen() {
         {/* Stats */}
         <View style={styles.stats}>
           <View style={styles.stat}>
-            <Text style={styles.statNum}>{route.length}</Text>
-            <Text style={styles.statLbl}>pts rota</Text>
+            <Text style={[styles.statNum, { color: Colors.primary }]}>
+              {distanceKm < 1
+                ? `${Math.round(distanceKm * 1000)}m`
+                : `${distanceKm.toFixed(1)}km`}
+            </Text>
+            <Text style={styles.statLbl}>distância</Text>
           </View>
           <View style={styles.stat}>
             <Text style={styles.statNum}>
