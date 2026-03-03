@@ -115,16 +115,23 @@ export default function EditRaceScreen() {
         startTime,
       };
 
+      // Upload photo separately — don't block save
       if (photoUri) {
-        const photoUrl = await raceService.uploadRacePhoto(id, photoUri);
-        updates.photoUrl = photoUrl;
+        try {
+          const photoUrl = await raceService.uploadRacePhoto(id, photoUri);
+          updates.photoUrl = photoUrl;
+        } catch (photoErr) {
+          console.error('[EditRace] photo upload failed:', photoErr);
+          // Continue saving other fields
+        }
       }
 
       await raceService.updateRace(id, updates);
       Alert.alert('Salvo!', 'Corrida atualizada com sucesso.');
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('[EditRace] save error:', error);
-      Alert.alert('Erro', 'Não foi possível salvar as alterações.');
+      const msg = error instanceof Error ? error.message : String(error);
+      Alert.alert('Erro ao salvar', msg);
     } finally {
       setSaving(false);
     }

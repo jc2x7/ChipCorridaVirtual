@@ -6,6 +6,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authService } from '@/services/authService';
 import { useAuthStore } from '@/stores/authStore';
+import { Config } from '@/constants/config';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -17,6 +18,22 @@ export default function RootLayout() {
       if (firebaseUser) {
         try {
           const profile = await authService.getUserProfile(firebaseUser.uid);
+
+          // Auto-promote DEFAULT_ADMIN_EMAIL if not yet admin
+          if (
+            profile &&
+            !profile.isAdmin &&
+            firebaseUser.email?.toLowerCase() === Config.DEFAULT_ADMIN_EMAIL.toLowerCase()
+          ) {
+            try {
+              await authService.setAdminRole(firebaseUser.uid, true);
+              profile.isAdmin = true;
+              console.log('[Auth] Auto-promoted default admin:', firebaseUser.email);
+            } catch (e) {
+              console.error('[Auth] Failed to auto-promote admin:', e);
+            }
+          }
+
           setUser(profile);
         } catch {
           setUser(null);

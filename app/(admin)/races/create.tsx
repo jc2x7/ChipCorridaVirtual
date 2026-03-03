@@ -38,9 +38,8 @@ export default function CreateRaceScreen() {
   const { user } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-  // Date/time picker state
+  // Date/time state — defaults to today + 07:00
   const [startDate, setStartDate] = useState<Date>(new Date());
   const [startTimeDate, setStartTimeDate] = useState<Date>(() => {
     const d = new Date();
@@ -49,16 +48,12 @@ export default function CreateRaceScreen() {
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
-  const [dateSelected, setDateSelected] = useState(false);
-  const [timeSelected, setTimeSelected] = useState(false);
 
   const {
     control,
     handleSubmit,
     formState: { errors },
-  } = useForm<FormData>({
-    resolver: zodResolver(schema),
-  });
+  } = useForm<FormData>({ resolver: zodResolver(schema) });
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -74,34 +69,25 @@ export default function CreateRaceScreen() {
 
   const onDateChange = (_event: DateTimePickerEvent, selected?: Date) => {
     if (Platform.OS === 'android') setShowDatePicker(false);
-    if (selected) {
-      setStartDate(selected);
-      setDateSelected(true);
-    }
+    if (selected) setStartDate(selected);
   };
 
   const onTimeChange = (_event: DateTimePickerEvent, selected?: Date) => {
     if (Platform.OS === 'android') setShowTimePicker(false);
-    if (selected) {
-      setStartTimeDate(selected);
-      setTimeSelected(true);
-    }
+    if (selected) setStartTimeDate(selected);
   };
 
   const onSubmit = async (data: FormData) => {
-    if (!user) return;
-
-    if (!dateSelected) {
-      Alert.alert('Erro', 'Selecione a data de largada.');
-      return;
-    }
-    if (!timeSelected) {
-      Alert.alert('Erro', 'Selecione a hora de largada.');
+    if (!user) {
+      Alert.alert('Erro', 'Usuário não autenticado. Faça login novamente.');
       return;
     }
 
     setLoading(true);
+    let raceId: string | null = null;
+
     try {
+      // 1. Build start time
       const startTime = new Date(
         startDate.getFullYear(),
         startDate.getMonth(),
@@ -110,36 +96,54 @@ export default function CreateRaceScreen() {
         startTimeDate.getMinutes()
       );
 
-      const raceId = await raceService.createRace(user.id, {
+      // 2. Create race in Firestore (WITHOUT photo)
+      console.log('[CreateRace] creating race for user:', user.id, 'isAdmin:', user.isAdmin);
+      raceId = await raceService.createRace(user.id, {
         name: data.name,
         description: data.description ?? '',
         startTime,
       });
+      console.log('[CreateRace] race created, id:', raceId);
+    } catch (error: unknown) {
+      console.error('[CreateRace] create error:', error);
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('permission') || msg.includes('PERMISSION_DENIED')) {
+        Alert.alert(
+          'Sem permissão',
+          'Sua conta não tem permissão de admin. Faça logout e login novamente para ativar.'
+        );
+      } else {
+        Alert.alert('Erro ao criar corrida', msg);
+      }
+      setLoading(false);
+      return;
+    }
 
-      if (photoUri) {
-        setUploadingPhoto(true);
+    // 3. Upload photo separately (non-blocking — race already exists)
+    if (photoUri) {
+      try {
+        console.log('[CreateRace] uploading photo...');
         const photoUrl = await raceService.uploadRacePhoto(raceId, photoUri);
         await raceService.updateRace(raceId, { photoUrl });
-        setUploadingPhoto(false);
+        console.log('[CreateRace] photo uploaded');
+      } catch (photoError) {
+        console.error('[CreateRace] photo upload failed (race still created):', photoError);
+        // Don't block — race was created, photo just failed
       }
-
-      Alert.alert('Corrida criada!', 'Agora configure o mapa e os checkpoints.', [
-        {
-          text: 'Configurar mapa',
-          onPress: () => router.replace(`/(admin)/races/${raceId}/map-editor`),
-        },
-        {
-          text: 'Depois',
-          onPress: () => router.replace('/(admin)/races/index'),
-        },
-      ]);
-    } catch (error) {
-      console.error('[CreateRace] ERROR:', error);
-      Alert.alert('Erro', 'Não foi possível criar a corrida. Tente novamente.');
-    } finally {
-      setLoading(false);
-      setUploadingPhoto(false);
     }
+
+    setLoading(false);
+
+    Alert.alert('Corrida criada!', 'Agora configure o mapa e os checkpoints.', [
+      {
+        text: 'Configurar mapa',
+        onPress: () => router.replace(`/(admin)/races/${raceId}/map-editor`),
+      },
+      {
+        text: 'Depois',
+        onPress: () => router.replace('/(admin)/races'),
+      },
+    ]);
   };
 
   return (
@@ -164,12 +168,8 @@ export default function CreateRaceScreen() {
           ) : (
             <View style={styles.photoPlaceholder}>
               <Ionicons name="camera-outline" size={36} color={Colors.textMuted} />
-              <Text style={styles.photoPlaceholderText}>
-                Adicionar foto de capa
-              </Text>
-              <Text style={styles.photoPlaceholderSub}>
-                Opcional - 16:9 recomendado
-              </Text>
+              <Text style={styles.photoPlaceholderText}>Adicionar foto de capa</Text>
+              <Text style={styles.photoPlaceholderSub}>Opcional - 16:9 recomendado</Text>
             </View>
           )}
           {photoUri && (
@@ -219,23 +219,12 @@ export default function CreateRaceScreen() {
             <Text style={styles.label}>Data de largada *</Text>
             <TouchableOpacity
               onPress={() => setShowDatePicker(true)}
-              style={[styles.pickerBtn, !dateSelected && styles.pickerBtnEmpty]}
+              style={styles.pickerBtn}
               activeOpacity={0.7}
             >
-              <Ionicons
-                name="calendar-outline"
-                size={18}
-                color={dateSelected ? Colors.primary : Colors.textMuted}
-              />
-              <Text
-                style={[
-                  styles.pickerBtnText,
-                  !dateSelected && styles.pickerBtnPlaceholder,
-                ]}
-              >
-                {dateSelected
-                  ? format(startDate, "dd 'de' MMM, yyyy", { locale: ptBR })
-                  : 'Selecionar data'}
+              <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
+              <Text style={styles.pickerBtnText}>
+                {format(startDate, "dd 'de' MMM, yyyy", { locale: ptBR })}
               </Text>
             </TouchableOpacity>
           </View>
@@ -244,23 +233,12 @@ export default function CreateRaceScreen() {
             <Text style={styles.label}>Hora *</Text>
             <TouchableOpacity
               onPress={() => setShowTimePicker(true)}
-              style={[styles.pickerBtn, !timeSelected && styles.pickerBtnEmpty]}
+              style={styles.pickerBtn}
               activeOpacity={0.7}
             >
-              <Ionicons
-                name="time-outline"
-                size={18}
-                color={timeSelected ? Colors.primary : Colors.textMuted}
-              />
-              <Text
-                style={[
-                  styles.pickerBtnText,
-                  !timeSelected && styles.pickerBtnPlaceholder,
-                ]}
-              >
-                {timeSelected
-                  ? format(startTimeDate, 'HH:mm')
-                  : 'Selecionar hora'}
+              <Ionicons name="time-outline" size={18} color={Colors.primary} />
+              <Text style={styles.pickerBtnText}>
+                {format(startTimeDate, 'HH:mm')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -279,10 +257,7 @@ export default function CreateRaceScreen() {
             />
             {Platform.OS === 'ios' && (
               <TouchableOpacity
-                onPress={() => {
-                  setShowDatePicker(false);
-                  setDateSelected(true);
-                }}
+                onPress={() => setShowDatePicker(false)}
                 style={styles.pickerDoneBtn}
               >
                 <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
@@ -304,10 +279,7 @@ export default function CreateRaceScreen() {
             />
             {Platform.OS === 'ios' && (
               <TouchableOpacity
-                onPress={() => {
-                  setShowTimePicker(false);
-                  setTimeSelected(true);
-                }}
+                onPress={() => setShowTimePicker(false)}
                 style={styles.pickerDoneBtn}
               >
                 <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
@@ -317,19 +289,14 @@ export default function CreateRaceScreen() {
         )}
 
         <View style={styles.hint}>
-          <Ionicons
-            name="information-circle-outline"
-            size={16}
-            color={Colors.secondary}
-          />
+          <Ionicons name="information-circle-outline" size={16} color={Colors.secondary} />
           <Text style={styles.hintText}>
-            Após criar, você poderá desenhar o percurso e adicionar os
-            checkpoints no editor de mapa.
+            Após criar, você poderá desenhar o percurso e adicionar os checkpoints no editor de mapa.
           </Text>
         </View>
 
         <Button
-          title={uploadingPhoto ? 'Enviando foto...' : 'Criar Corrida'}
+          title="Criar Corrida"
           onPress={handleSubmit(onSubmit)}
           loading={loading}
           fullWidth
@@ -396,17 +363,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 14,
   },
-  pickerBtnEmpty: {
-    borderColor: Colors.border,
-  },
   pickerBtnText: {
     fontSize: 14,
     fontWeight: '600',
     color: Colors.text,
-  },
-  pickerBtnPlaceholder: {
-    fontWeight: '400',
-    color: Colors.textMuted,
   },
   pickerContainer: {
     backgroundColor: Colors.surface,
