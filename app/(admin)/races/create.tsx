@@ -3,17 +3,16 @@ import {
   View,
   Text,
   ScrollView,
+  TextInput,
   TouchableOpacity,
   Alert,
   StyleSheet,
   Image,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { format } from 'date-fns';
@@ -21,18 +20,21 @@ import { ptBR } from 'date-fns/locale';
 import { Ionicons } from '@expo/vector-icons';
 import { raceService } from '@/services/raceService';
 import { useAuthStore } from '@/stores/authStore';
-import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
 
-const schema = z.object({
-  name: z.string().min(3, 'Nome deve ter no mínimo 3 caracteres'),
-  description: z.string().optional(),
-});
+function buildStartTime(date: Date, time: Date): Date {
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    time.getHours(),
+    time.getMinutes(),
+    0,
+    0
+  );
+}
 
-type FormData = z.infer<typeof schema>;
-
-function defaultTime() {
+function defaultHour(): Date {
   const d = new Date();
   d.setHours(7, 0, 0, 0);
   return d;
@@ -40,53 +42,57 @@ function defaultTime() {
 
 export default function CreateRaceScreen() {
   const { user } = useAuthStore();
-  const [saving, setSaving] = useState(false);
+
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [nameError, setNameError] = useState('');
+
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [startDate, setStartDate] = useState(new Date());
-  const [startTime, setStartTime] = useState(defaultTime);
+
+  const [date, setDate] = useState(() => new Date());
+  const [time, setTime] = useState(defaultHour);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  const { control, handleSubmit, formState: { errors } } = useForm<FormData>({
-    resolver: zodResolver(schema),
-  });
+  const [saving, setSaving] = useState(false);
 
+  /* ── Photo ───────────────────────────────────────────── */
   const pickPhoto = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: 'images',
       allowsEditing: true,
       aspect: [16, 9],
-      quality: 0.8,
+      quality: 0.85,
     });
     if (!result.canceled) setPhotoUri(result.assets[0].uri);
   };
 
-  const onSubmit = async (data: FormData) => {
+  /* ── Submit ──────────────────────────────────────────── */
+  const handleCreate = async () => {
+    const trimmed = name.trim();
+    if (trimmed.length < 3) {
+      setNameError('O nome deve ter pelo menos 3 caracteres.');
+      return;
+    }
+    setNameError('');
+
     if (!user) {
-      Alert.alert('Erro', 'Usuário não autenticado.');
+      Alert.alert('Erro', 'Usuário não autenticado. Faça login novamente.');
       return;
     }
 
     setSaving(true);
-    let raceId: string | null = null;
+    let raceId = '';
 
     try {
-      const combined = new Date(
-        startDate.getFullYear(),
-        startDate.getMonth(),
-        startDate.getDate(),
-        startTime.getHours(),
-        startTime.getMinutes()
-      );
-
       raceId = await raceService.createRace(user.id, {
-        name: data.name.trim(),
-        description: data.description?.trim() ?? '',
-        startTime: combined,
+        name: trimmed,
+        description: description.trim(),
+        startTime: buildStartTime(date, time),
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      Alert.alert('Erro ao criar corrida', msg);
+      Alert.alert('Não foi possível criar a corrida', msg);
       setSaving(false);
       return;
     }
@@ -96,250 +102,369 @@ export default function CreateRaceScreen() {
         const url = await raceService.uploadRacePhoto(raceId, photoUri);
         await raceService.updateRace(raceId, { photoUrl: url });
       } catch {
-        // photo failed — race already saved, continue
+        // foto falhou — corrida já criada, continua
       }
     }
 
     setSaving(false);
 
-    Alert.alert('Corrida criada!', 'Configure o percurso no editor de mapa.', [
-      {
-        text: 'Abrir mapa',
-        onPress: () => router.replace(`/(admin)/races/${raceId}/map-editor`),
-      },
-      {
-        text: 'Depois',
-        onPress: () => router.replace('/(admin)/races'),
-      },
-    ]);
+    Alert.alert(
+      'Corrida criada!',
+      'Agora desenhe o percurso e adicione os checkpoints.',
+      [
+        {
+          text: 'Abrir editor de mapa',
+          onPress: () => router.replace(`/(admin)/races/${raceId}/map-editor`),
+        },
+        {
+          text: 'Ver minhas corridas',
+          style: 'cancel',
+          onPress: () => router.replace('/(admin)/races'),
+        },
+      ]
+    );
   };
 
+  /* ── Render ──────────────────────────────────────────── */
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.root} edges={['bottom']}>
+      {/* ── Scroll area ── */}
       <ScrollView
-        contentContainerStyle={styles.content}
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Foto de capa */}
-        <TouchableOpacity onPress={pickPhoto} style={styles.photoPicker} activeOpacity={0.8}>
+        {/* ── Cover photo ── */}
+        <TouchableOpacity onPress={pickPhoto} activeOpacity={0.85} style={styles.coverArea}>
           {photoUri ? (
-            <Image source={{ uri: photoUri }} style={styles.photoImg} resizeMode="cover" />
+            <>
+              <Image source={{ uri: photoUri }} style={styles.coverImage} resizeMode="cover" />
+              <View style={styles.coverEditPill}>
+                <Ionicons name="camera" size={14} color="#FFF" />
+                <Text style={styles.coverEditText}>Alterar foto</Text>
+              </View>
+            </>
           ) : (
-            <View style={styles.photoEmpty}>
-              <Ionicons name="camera-outline" size={36} color={Colors.textMuted} />
-              <Text style={styles.photoEmptyText}>Adicionar foto de capa</Text>
-              <Text style={styles.photoEmptySub}>Opcional • proporção 16:9</Text>
-            </View>
-          )}
-          {photoUri && (
-            <View style={styles.photoEditBadge}>
-              <Ionicons name="camera" size={20} color="#FFF" />
+            <View style={styles.coverPlaceholder}>
+              <View style={styles.coverIconCircle}>
+                <Ionicons name="camera-outline" size={28} color={Colors.primary} />
+              </View>
+              <Text style={styles.coverPlaceholderTitle}>Adicionar foto de capa</Text>
+              <Text style={styles.coverPlaceholderSub}>Opcional · proporção 16:9</Text>
             </View>
           )}
         </TouchableOpacity>
 
-        {/* Nome */}
-        <Controller
-          control={control}
-          name="name"
-          render={({ field: { onChange, value } }) => (
-            <Input
-              label="Nome da corrida *"
+        {/* ── Seção: Detalhes ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>DETALHES</Text>
+
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel}>Nome da corrida</Text>
+            <TextInput
+              style={[styles.fieldInput, nameError ? styles.fieldInputError : null]}
               placeholder="Ex: Corrida do Parque 5k"
-              value={value}
-              onChangeText={onChange}
-              leftIcon="flag-outline"
-              error={errors.name?.message}
+              placeholderTextColor={Colors.textMuted}
+              value={name}
+              onChangeText={(v) => { setName(v); if (nameError) setNameError(''); }}
+              returnKeyType="next"
+              maxLength={80}
             />
-          )}
-        />
-
-        {/* Descrição */}
-        <Controller
-          control={control}
-          name="description"
-          render={({ field: { onChange, value } }) => (
-            <Input
-              label="Descrição"
-              placeholder="Descreva a corrida, percurso, regras..."
-              value={value}
-              onChangeText={onChange}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-              style={{ minHeight: 100, paddingTop: 12 }}
-              leftIcon="document-text-outline"
-            />
-          )}
-        />
-
-        {/* Data e Hora */}
-        <View style={styles.row}>
-          <View style={styles.flex1}>
-            <Text style={styles.label}>Data de largada *</Text>
-            <TouchableOpacity
-              style={styles.pickerBtn}
-              onPress={() => setShowDatePicker(true)}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
-              <Text style={styles.pickerText}>
-                {format(startDate, "dd 'de' MMM, yyyy", { locale: ptBR })}
-              </Text>
-            </TouchableOpacity>
+            {nameError ? <Text style={styles.fieldError}>{nameError}</Text> : null}
           </View>
 
-          <View style={styles.flex1}>
-            <Text style={styles.label}>Hora *</Text>
-            <TouchableOpacity
-              style={styles.pickerBtn}
-              onPress={() => setShowTimePicker(true)}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="time-outline" size={18} color={Colors.primary} />
-              <Text style={styles.pickerText}>{format(startTime, 'HH:mm')}</Text>
-            </TouchableOpacity>
+          <View style={[styles.field, styles.fieldLast]}>
+            <Text style={styles.fieldLabel}>Descrição</Text>
+            <TextInput
+              style={[styles.fieldInput, styles.fieldInputMulti]}
+              placeholder="Descreva a corrida, regras, percurso..."
+              placeholderTextColor={Colors.textMuted}
+              value={description}
+              onChangeText={setDescription}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+              maxLength={500}
+            />
           </View>
         </View>
 
-        {showDatePicker && (
-          <View style={styles.pickerCard}>
-            <DateTimePicker
-              value={startDate}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
-              minimumDate={new Date()}
-              onChange={(_e, date) => {
-                if (Platform.OS === 'android') setShowDatePicker(false);
-                if (date) setStartDate(date);
-              }}
-            />
-            {Platform.OS === 'ios' && (
-              <TouchableOpacity style={styles.doneBtn} onPress={() => setShowDatePicker(false)}>
-                <Text style={styles.doneBtnText}>Confirmar</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
+        {/* ── Seção: Quando ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>QUANDO</Text>
 
-        {showTimePicker && (
-          <View style={styles.pickerCard}>
-            <DateTimePicker
-              value={startTime}
-              mode="time"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              is24Hour
-              onChange={(_e, date) => {
-                if (Platform.OS === 'android') setShowTimePicker(false);
-                if (date) setStartTime(date);
-              }}
+          {/* Data */}
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => { setShowTimePicker(false); setShowDatePicker((v) => !v); }}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="calendar-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowBody}>
+              <Text style={styles.rowLabel}>Data de largada</Text>
+              <Text style={styles.rowValue}>
+                {format(date, "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
+              </Text>
+            </View>
+            <Ionicons
+              name={showDatePicker ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={Colors.textMuted}
             />
-            {Platform.OS === 'ios' && (
-              <TouchableOpacity style={styles.doneBtn} onPress={() => setShowTimePicker(false)}>
-                <Text style={styles.doneBtnText}>Confirmar</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
+          </TouchableOpacity>
 
-        {/* Dica */}
-        <View style={styles.hint}>
-          <Ionicons name="information-circle-outline" size={16} color={Colors.secondary} />
-          <Text style={styles.hintText}>
-            Após criar, você poderá desenhar o percurso e adicionar checkpoints no editor de mapa.
+          {showDatePicker && (
+            <View style={styles.pickerWrap}>
+              <DateTimePicker
+                value={date}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                minimumDate={new Date()}
+                onChange={(_e, picked) => {
+                  if (Platform.OS === 'android') setShowDatePicker(false);
+                  if (picked) setDate(picked);
+                }}
+              />
+              {Platform.OS === 'ios' && (
+                <TouchableOpacity style={styles.confirmBtn} onPress={() => setShowDatePicker(false)}>
+                  <Text style={styles.confirmBtnText}>Confirmar</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          <View style={styles.rowDivider} />
+
+          {/* Hora */}
+          <TouchableOpacity
+            style={[styles.row, styles.rowLast]}
+            onPress={() => { setShowDatePicker(false); setShowTimePicker((v) => !v); }}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="time-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowBody}>
+              <Text style={styles.rowLabel}>Horário de largada</Text>
+              <Text style={styles.rowValue}>{format(time, "HH'h'mm")}</Text>
+            </View>
+            <Ionicons
+              name={showTimePicker ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={Colors.textMuted}
+            />
+          </TouchableOpacity>
+
+          {showTimePicker && (
+            <View style={styles.pickerWrap}>
+              <DateTimePicker
+                value={time}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                is24Hour
+                onChange={(_e, picked) => {
+                  if (Platform.OS === 'android') setShowTimePicker(false);
+                  if (picked) setTime(picked);
+                }}
+              />
+              {Platform.OS === 'ios' && (
+                <TouchableOpacity style={styles.confirmBtn} onPress={() => setShowTimePicker(false)}>
+                  <Text style={styles.confirmBtnText}>Confirmar</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* ── Info ── */}
+        <View style={styles.infoBar}>
+          <Ionicons name="map-outline" size={16} color={Colors.secondary} />
+          <Text style={styles.infoText}>
+            Após criar, você desenhará o percurso e adicionará os checkpoints no editor de mapa.
           </Text>
         </View>
-
-        <Button
-          title="Criar corrida"
-          onPress={handleSubmit(onSubmit)}
-          loading={saving}
-          fullWidth
-          size="lg"
-          icon={<Ionicons name="checkmark-circle-outline" size={20} color="#FFF" />}
-        />
       </ScrollView>
+
+      {/* ── Footer fixo ── */}
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={[styles.createBtn, saving && styles.createBtnDisabled]}
+          onPress={handleCreate}
+          disabled={saving}
+          activeOpacity={0.85}
+        >
+          {saving ? (
+            <ActivityIndicator size="small" color="#FFF" />
+          ) : (
+            <>
+              <Ionicons name="flag" size={18} color="#FFF" />
+              <Text style={styles.createBtnText}>Criar corrida</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: 20, paddingBottom: 40 },
+  root: { flex: 1, backgroundColor: Colors.background },
+  scroll: { flex: 1 },
+  scrollContent: { paddingBottom: 16 },
 
-  photoPicker: {
-    borderRadius: 16,
-    overflow: 'hidden',
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: Colors.border,
-    borderStyle: 'dashed',
-  },
-  photoImg: { width: '100%', height: 180 },
-  photoEmpty: {
-    height: 140,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+  /* Cover */
+  coverArea: {
+    width: '100%',
+    height: 200,
     backgroundColor: Colors.surfaceSecondary,
+    overflow: 'hidden',
   },
-  photoEmptyText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
-  photoEmptySub: { fontSize: 12, color: Colors.textMuted },
-  photoEditBadge: {
+  coverImage: { width: '100%', height: '100%' },
+  coverEditPill: {
     position: 'absolute',
-    bottom: 8,
-    right: 8,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  row: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  flex1: { flex: 1 },
-  label: { fontSize: 14, fontWeight: '600', color: Colors.text, marginBottom: 6 },
-  pickerBtn: {
+    bottom: 12,
+    right: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
+    gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 20,
     paddingHorizontal: 12,
-    paddingVertical: 13,
+    paddingVertical: 6,
   },
-  pickerText: { fontSize: 14, fontWeight: '600', color: Colors.text },
+  coverEditText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
+  coverPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  coverIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Colors.primaryBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  coverPlaceholderTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  coverPlaceholderSub: { fontSize: 12, color: Colors.textMuted },
 
-  pickerCard: {
+  /* Section */
+  section: {
     backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 16,
-    borderWidth: 1,
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: Colors.border,
+    paddingHorizontal: 20,
   },
-  doneBtn: {
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textMuted,
+    letterSpacing: 1,
+    marginTop: 16,
+    marginBottom: 12,
+  },
+
+  /* Field */
+  field: {
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    marginBottom: 16,
+  },
+  fieldLast: {
+    borderBottomWidth: 0,
+    marginBottom: 4,
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textMuted,
+    letterSpacing: 0.5,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  fieldInput: {
+    fontSize: 16,
+    color: Colors.text,
+    paddingVertical: 0,
+    lineHeight: 22,
+  },
+  fieldInputError: { color: Colors.error },
+  fieldInputMulti: { minHeight: 64, lineHeight: 22 },
+  fieldError: { fontSize: 12, color: Colors.error, marginTop: 4 },
+
+  /* Row (date/time) */
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    gap: 12,
+  },
+  rowLast: { paddingBottom: 16 },
+  rowIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: Colors.primaryBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowBody: { flex: 1 },
+  rowLabel: { fontSize: 12, color: Colors.textMuted, fontWeight: '600', marginBottom: 2 },
+  rowValue: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  rowDivider: { height: 1, backgroundColor: Colors.border, marginLeft: 48 },
+
+  pickerWrap: {
+    paddingBottom: 12,
+  },
+  confirmBtn: {
     alignSelf: 'flex-end',
     backgroundColor: Colors.primary,
     borderRadius: 8,
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingVertical: 8,
     marginTop: 8,
   },
-  doneBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  confirmBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
 
-  hint: {
+  /* Info */
+  infoBar: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
+    gap: 10,
+    margin: 16,
     backgroundColor: Colors.secondaryLight,
     borderRadius: 12,
     padding: 14,
-    marginBottom: 20,
   },
-  hintText: { flex: 1, fontSize: 13, color: Colors.secondary, lineHeight: 18 },
+  infoText: { flex: 1, fontSize: 13, color: Colors.secondary, lineHeight: 19 },
+
+  /* Footer */
+  footer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 16,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  createBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: 14,
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  createBtnDisabled: { opacity: 0.6 },
+  createBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
 });
