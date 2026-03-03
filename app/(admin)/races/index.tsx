@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
+  RefreshControl,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -38,51 +39,61 @@ export default function AdminRacesScreen() {
   const { initialized } = useAuthStore();
   const [races, setRaces] = useState<Race[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [retryKey, setRetryKey] = useState(0);
 
-  const retry = useCallback(() => {
-    setError(null);
-    setLoading(true);
-    setRetryKey((k) => k + 1);
+  // One-shot getDocs — much simpler and more reliable than onSnapshot.
+  // If it fails, we show the actual error and let the user pull-to-refresh.
+  const load = useCallback(async () => {
+    try {
+      const data = await raceService.getAllRaces();
+      setRaces(data);
+      setError(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao carregar corridas';
+      console.error('[AdminRaces] load error:', msg);
+      setError(msg);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
+  // Wait for Firebase Auth to finish restoring the session before reading
+  // Firestore. Without this guard the read fires with no auth token and
+  // gets permission-denied.
   useEffect(() => {
-    // Wait for Firebase Auth to finish restoring the session before
-    // opening a Firestore listener. Without this, the listener can fire
-    // with permission-denied (no auth token yet) and die permanently.
     if (!initialized) return;
+    load();
+  }, [initialized, load]);
 
-    const unsub = raceService.subscribeToAllRaces(
-      (data) => {
-        setRaces(data);
-        setLoading(false);
-        setError(null);
-      },
-      (err) => {
-        console.error('[AdminRaces] subscription error:', err);
-        setLoading(false);
-        setError(err.message);
-      }
-    );
-    return unsub;
-  }, [initialized, retryKey]);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    load();
+  }, [load]);
 
   const confirmStatusChange = (race: Race, next: RaceStatus) => {
-    const action: Record<RaceStatus, string> = {
+    const label: Record<RaceStatus, string> = {
       draft: 'mover para rascunho',
       published: 'publicar',
-      active: 'iniciar',
+      active: 'iniciar ao vivo',
       finished: 'encerrar',
     };
     Alert.alert(
       'Alterar status',
-      `Deseja ${action[next]} a corrida "${race.name}"?`,
+      `Deseja ${label[next]} a corrida "${race.name}"?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Confirmar',
-          onPress: () => raceService.updateRace(race.id, { status: next }),
+          onPress: async () => {
+            try {
+              await raceService.updateRace(race.id, { status: next });
+              load();
+            } catch (e: unknown) {
+              Alert.alert('Erro', e instanceof Error ? e.message : 'Tente novamente.');
+            }
+          },
         },
       ]
     );
@@ -91,13 +102,20 @@ export default function AdminRacesScreen() {
   const confirmDelete = (race: Race) => {
     Alert.alert(
       'Excluir corrida',
-      `Tem certeza que quer excluir "${race.name}"? Esta ação não pode ser desfeita.`,
+      `Excluir "${race.name}"? Esta ação não pode ser desfeita.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Excluir',
           style: 'destructive',
-          onPress: () => raceService.deleteRace(race.id),
+          onPress: async () => {
+            try {
+              await raceService.deleteRace(race.id);
+              load();
+            } catch (e: unknown) {
+              Alert.alert('Erro', e instanceof Error ? e.message : 'Tente novamente.');
+            }
+          },
         },
       ]
     );
@@ -111,7 +129,10 @@ export default function AdminRacesScreen() {
         <Ionicons name="cloud-offline-outline" size={52} color={Colors.textMuted} />
         <Text style={styles.errorTitle}>Erro ao carregar corridas</Text>
         <Text style={styles.errorSub}>{error}</Text>
-        <TouchableOpacity style={styles.retryBtn} onPress={retry}>
+        <TouchableOpacity
+          style={styles.retryBtn}
+          onPress={() => { setLoading(true); setError(null); load(); }}
+        >
           <Ionicons name="refresh-outline" size={16} color="#FFF" />
           <Text style={styles.retryBtnText}>Tentar novamente</Text>
         </TouchableOpacity>
@@ -122,7 +143,9 @@ export default function AdminRacesScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <View style={styles.topBar}>
-        <Text style={styles.count}>{races.length} corrida{races.length !== 1 ? 's' : ''}</Text>
+        <Text style={styles.count}>
+          {races.length} corrida{races.length !== 1 ? 's' : ''}
+        </Text>
         <Button
           title="Nova corrida"
           size="sm"
@@ -136,18 +159,30 @@ export default function AdminRacesScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Colors.primary}
+            colors={[Colors.primary]}
+          />
+        }
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="flag-outline" size={52} color={Colors.textMuted} />
             <Text style={styles.emptyText}>Nenhuma corrida criada</Text>
+            <Text style={styles.emptySub}>Toque em "Nova corrida" para começar</Text>
           </View>
         }
         renderItem={({ item: race }) => (
           <View style={styles.card}>
-            {/* Header */}
             <View style={styles.cardHeader}>
               <Text style={styles.cardName} numberOfLines={1}>{race.name}</Text>
-              <Badge label={STATUS_LABEL[race.status]} variant={STATUS_VARIANT[race.status]} size="sm" />
+              <Badge
+                label={STATUS_LABEL[race.status]}
+                variant={STATUS_VARIANT[race.status]}
+                size="sm"
+              />
             </View>
 
             <Text style={styles.cardDate}>
@@ -155,11 +190,10 @@ export default function AdminRacesScreen() {
             </Text>
             <Text style={styles.cardMeta}>
               {race.checkpoints.length} checkpoint{race.checkpoints.length !== 1 ? 's' : ''}
-              {'  •  '}
+              {'  ·  '}
               {race.participantCount ?? 0} atleta{(race.participantCount ?? 0) !== 1 ? 's' : ''}
             </Text>
 
-            {/* Actions */}
             <View style={styles.actions}>
               <ActionBtn
                 icon="create-outline"
@@ -276,15 +310,22 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceSecondary,
   },
   actionLabel: { fontSize: 12, fontWeight: '600' },
-  empty: { alignItems: 'center', paddingVertical: 60, gap: 12 },
-  emptyText: { fontSize: 16, color: Colors.textMuted },
+  empty: { alignItems: 'center', paddingVertical: 60, gap: 8 },
+  emptyText: { fontSize: 16, fontWeight: '700', color: Colors.textMuted },
+  emptySub: { fontSize: 13, color: Colors.textMuted },
   errorTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  errorSub: { fontSize: 14, color: Colors.textMuted, textAlign: 'center', paddingHorizontal: 32 },
+  errorSub: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+    marginTop: 4,
+  },
   retryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 8,
+    marginTop: 12,
     backgroundColor: Colors.primary,
     borderRadius: 10,
     paddingHorizontal: 20,

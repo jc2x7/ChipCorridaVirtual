@@ -5,7 +5,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
-  ScrollView,
   Platform,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -23,13 +22,30 @@ import { Race, Checkpoint, RoutePoint } from '@/types';
 import { raceService } from '@/services/raceService';
 import { Colors } from '@/constants/colors';
 import { Loading } from '@/components/ui/Loading';
-import { Button } from '@/components/ui/Button';
 
-function haversineDistance(
+// ─── Mode definitions ─────────────────────────────────────────────────────────
+
+type EditorMode = 'route' | 'checkpoint' | 'start' | 'finish';
+
+const MODES: {
+  mode: EditorMode;
+  label: string;
+  color: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+}[] = [
+  { mode: 'route',      label: 'Rota',        color: Colors.routeColor,        icon: 'git-merge-outline' },
+  { mode: 'checkpoint', label: 'Checkpoint',  color: Colors.checkpointNormal,  icon: 'flag-outline' },
+  { mode: 'start',      label: 'Largada',     color: Colors.checkpointStart,   icon: 'play-circle-outline' },
+  { mode: 'finish',     label: 'Chegada',     color: Colors.checkpointFinish,  icon: 'checkmark-circle-outline' },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function haversineKm(
   p1: { latitude: number; longitude: number },
   p2: { latitude: number; longitude: number }
 ): number {
-  const R = 6371; // km
+  const R = 6371;
   const dLat = ((p2.latitude - p1.latitude) * Math.PI) / 180;
   const dLon = ((p2.longitude - p1.longitude) * Math.PI) / 180;
   const a =
@@ -40,37 +56,13 @@ function haversineDistance(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function calcRouteDistanceKm(points: RoutePoint[]): number {
+function calcRouteKm(points: RoutePoint[]): number {
   let total = 0;
-  for (let i = 1; i < points.length; i++) {
-    total += haversineDistance(points[i - 1], points[i]);
-  }
+  for (let i = 1; i < points.length; i++) total += haversineKm(points[i - 1], points[i]);
   return total;
 }
 
-type EditorMode = 'route' | 'checkpoint' | 'start' | 'finish';
-
-const modeConfig: Record<
-  EditorMode,
-  { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }
-> = {
-  route: { label: 'Rota', color: Colors.routeColor, icon: 'git-merge-outline' },
-  checkpoint: {
-    label: 'Checkpoint',
-    color: Colors.checkpointNormal,
-    icon: 'flag-outline',
-  },
-  start: {
-    label: 'Largada',
-    color: Colors.checkpointStart,
-    icon: 'play-circle-outline',
-  },
-  finish: {
-    label: 'Chegada',
-    color: Colors.checkpointFinish,
-    icon: 'stop-circle-outline',
-  },
-};
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MapEditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -80,9 +72,152 @@ export default function MapEditorScreen() {
   const [mode, setMode] = useState<EditorMode>('checkpoint');
   const [route, setRoute] = useState<RoutePoint[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [showHelp, setShowHelp] = useState(false);
+
   const mapRef = useRef<MapView>(null);
+  const mapReady = useRef(false);
   const currentRegion = useRef<Region | null>(null);
+
+  // distanceKm must be computed BEFORE any conditional return (Rules of Hooks)
+  const distanceKm = useMemo(() => calcRouteKm(route), [route]);
+
+  useEffect(() => {
+    if (!id) { setLoading(false); return; }
+    const unsub = raceService.subscribeToRace(
+      id,
+      (r) => {
+        setRace(r);
+        // Initialise route/checkpoints only once — don't overwrite user edits
+        if (r && !mapReady.current) {
+          setRoute(r.route ?? []);
+          setCheckpoints(r.checkpoints ?? []);
+          mapReady.current = true;
+        }
+        setLoading(false);
+      },
+      () => setLoading(false)
+    );
+    return unsub;
+  }, [id]);
+
+  if (loading) return <Loading fullScreen />;
+
+  if (!race) {
+    return (
+      <SafeAreaView style={[styles.container, styles.center]}>
+        <Ionicons name="alert-circle-outline" size={48} color={Colors.textMuted} />
+        <Text style={styles.notFoundText}>Corrida não encontrada.</Text>
+        <TouchableOpacity style={styles.backLink} onPress={() => router.back()}>
+          <Text style={styles.backLinkText}>Voltar</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Computed values (after loading guard) ──────────────────────────────────
+
+  const initialRegion: Region = {
+    latitude:  checkpoints[0]?.latitude  ?? route[0]?.latitude  ?? -15.7801,
+    longitude: checkpoints[0]?.longitude ?? route[0]?.longitude ?? -47.9292,
+    latitudeDelta:  0.05,
+    longitudeDelta: 0.05,
+  };
+
+  const sortedCps = [...checkpoints].sort((a, b) => a.order - b.order);
+  const hasStart  = checkpoints.some((c) => c.isStart);
+  const hasFinish = checkpoints.some((c) => c.isFinish);
+
+  // ── Map press handler ──────────────────────────────────────────────────────
+  // NOTE: Alert.alert() is intentionally NOT called here — calling Alert inside
+  // a MapPressEvent handler causes crashes on some versions of react-native-maps
+  // on Android. Start / finish points are silently replaced instead.
+
+  const handleMapPress = (e: MapPressEvent) => {
+    const { latitude, longitude } = e.nativeEvent.coordinate;
+
+    if (mode === 'route') {
+      setRoute((prev) => [...prev, { latitude, longitude }]);
+      return;
+    }
+
+    if (mode === 'checkpoint') {
+      const normalCount = checkpoints.filter((c) => !c.isStart && !c.isFinish).length;
+      const newCp: Checkpoint = {
+        id: `cp_${Date.now()}`,
+        name: `Checkpoint ${normalCount + 1}`,
+        latitude,
+        longitude,
+        order: checkpoints.length,
+        isStart: false,
+        isFinish: false,
+      };
+      setCheckpoints((prev) => {
+        const updated = [...prev, newCp];
+        return updated.map((cp, idx) => ({ ...cp, order: idx }));
+      });
+      return;
+    }
+
+    if (mode === 'start') {
+      // Replace any existing start silently (no Alert inside map press)
+      const newCp: Checkpoint = {
+        id: `start_${Date.now()}`,
+        name: 'Largada',
+        latitude,
+        longitude,
+        order: 0,
+        isStart: true,
+        isFinish: false,
+      };
+      setCheckpoints((prev) => {
+        const without = prev.filter((c) => !c.isStart);
+        return [newCp, ...without].map((cp, idx) => ({ ...cp, order: idx }));
+      });
+      return;
+    }
+
+    if (mode === 'finish') {
+      // Replace any existing finish silently (no Alert inside map press)
+      const newCp: Checkpoint = {
+        id: `finish_${Date.now()}`,
+        name: 'Chegada',
+        latitude,
+        longitude,
+        order: 999,
+        isStart: false,
+        isFinish: true,
+      };
+      setCheckpoints((prev) => {
+        const without = prev.filter((c) => !c.isFinish);
+        return [...without, newCp].map((cp, idx) => ({ ...cp, order: idx }));
+      });
+    }
+  };
+
+  // ── Save ───────────────────────────────────────────────────────────────────
+
+  const handleSave = async () => {
+    if (!id) return;
+    if (!hasStart || !hasFinish) {
+      Alert.alert(
+        'Percurso incompleto',
+        `Adicione ${!hasStart ? 'a Largada' : 'a Chegada'} antes de salvar.`
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      await raceService.updateRace(id, { route, checkpoints });
+      Alert.alert('Mapa salvo!', 'Percurso salvo com sucesso.', [
+        { text: 'OK', onPress: () => router.back() },
+      ]);
+    } catch {
+      Alert.alert('Erro', 'Não foi possível salvar o mapa.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Zoom controls ──────────────────────────────────────────────────────────
 
   const zoomIn = () => {
     const base = currentRegion.current ?? initialRegion;
@@ -100,514 +235,261 @@ export default function MapEditorScreen() {
     );
   };
 
-  const mapReady = useRef(false);
-
-  useEffect(() => {
-    if (!id) { setLoading(false); return; }
-    const unsub = raceService.subscribeToRace(
-      id,
-      (r) => {
-        setRace(r);
-        // Only initialise route/checkpoints once — don't overwrite user edits
-        if (r && !mapReady.current) {
-          setRoute(r.route);
-          setCheckpoints(r.checkpoints);
-          mapReady.current = true;
-        }
-        setLoading(false);
-      },
-      () => setLoading(false)
-    );
-    return unsub;
-  }, [id]);
-
-  const handleMapPress = (e: MapPressEvent) => {
-    const coords = e.nativeEvent.coordinate;
-
-    if (mode === 'route') {
-      setRoute((prev) => [
-        ...prev,
-        { latitude: coords.latitude, longitude: coords.longitude },
-      ]);
-    } else if (mode === 'checkpoint') {
-      const order = checkpoints.filter(
-        (c) => !c.isStart && !c.isFinish
-      ).length + 1;
-      const newCp: Checkpoint = {
-        id: `cp_${Date.now()}`,
-        name: `Checkpoint ${order}`,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        order: checkpoints.length,
-        isStart: false,
-        isFinish: false,
-      };
-      setCheckpoints((prev) => {
-        // Reassign orders
-        const updated = [...prev, newCp];
-        return updated.map((cp, idx) => ({ ...cp, order: idx }));
-      });
-    } else if (mode === 'start') {
-      const existing = checkpoints.find((c) => c.isStart);
-      if (existing) {
-        Alert.alert(
-          'Largada já definida',
-          'Deseja substituir o ponto de largada?',
-          [
-            { text: 'Cancelar', style: 'cancel' },
-            {
-              text: 'Substituir',
-              onPress: () => {
-                setCheckpoints((prev) => {
-                  const filtered = prev.filter((c) => !c.isStart);
-                  const newCp: Checkpoint = {
-                    id: `start_${Date.now()}`,
-                    name: 'Largada',
-                    latitude: coords.latitude,
-                    longitude: coords.longitude,
-                    order: -1,
-                    isStart: true,
-                    isFinish: false,
-                  };
-                  const updated = [newCp, ...filtered];
-                  return updated.map((cp, idx) => ({ ...cp, order: idx }));
-                });
-              },
-            },
-          ]
-        );
-      } else {
-        const newCp: Checkpoint = {
-          id: `start_${Date.now()}`,
-          name: 'Largada',
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          order: 0,
-          isStart: true,
-          isFinish: false,
-        };
-        setCheckpoints((prev) => {
-          const updated = [newCp, ...prev];
-          return updated.map((cp, idx) => ({ ...cp, order: idx }));
-        });
-      }
-    } else if (mode === 'finish') {
-      const existing = checkpoints.find((c) => c.isFinish);
-      if (existing) {
-        Alert.alert(
-          'Chegada já definida',
-          'Deseja substituir o ponto de chegada?',
-          [
-            { text: 'Cancelar', style: 'cancel' },
-            {
-              text: 'Substituir',
-              onPress: () => {
-                setCheckpoints((prev) => {
-                  const filtered = prev.filter((c) => !c.isFinish);
-                  const newCp: Checkpoint = {
-                    id: `finish_${Date.now()}`,
-                    name: 'Chegada',
-                    latitude: coords.latitude,
-                    longitude: coords.longitude,
-                    order: filtered.length,
-                    isStart: false,
-                    isFinish: true,
-                  };
-                  return [...filtered, newCp].map((cp, idx) => ({
-                    ...cp,
-                    order: idx,
-                  }));
-                });
-              },
-            },
-          ]
-        );
-      } else {
-        const newCp: Checkpoint = {
-          id: `finish_${Date.now()}`,
-          name: 'Chegada',
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          order: checkpoints.length,
-          isStart: false,
-          isFinish: true,
-        };
-        setCheckpoints((prev) => [
-          ...prev,
-          { ...newCp, order: prev.length },
-        ]);
-      }
-    }
-  };
-
-  const removeLastRoutePoint = () => {
-    setRoute((prev) => prev.slice(0, -1));
-  };
-
-  const removeCheckpoint = (cpId: string) => {
-    setCheckpoints((prev) => {
-      const filtered = prev.filter((c) => c.id !== cpId);
-      return filtered.map((cp, idx) => ({ ...cp, order: idx }));
-    });
-  };
-
-  const clearRoute = () => {
-    Alert.alert('Limpar rota', 'Deseja remover todos os pontos da rota?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Limpar', style: 'destructive', onPress: () => setRoute([]) },
-    ]);
-  };
-
-  const clearAll = () => {
-    Alert.alert(
-      'Limpar tudo',
-      'Remover rota e todos os checkpoints?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Limpar',
-          style: 'destructive',
-          onPress: () => {
-            setRoute([]);
-            setCheckpoints([]);
-          },
-        },
-      ]
-    );
-  };
-
-  const handleSave = async () => {
-    if (!id) return;
-
-    const hasStart = checkpoints.some((c) => c.isStart);
-    const hasFinish = checkpoints.some((c) => c.isFinish);
-
-    if (!hasStart || !hasFinish) {
-      Alert.alert(
-        'Percurso incompleto',
-        'É necessário definir a largada e a chegada antes de salvar.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    setSaving(true);
-    try {
-      await raceService.updateRace(id, { route, checkpoints });
-      Alert.alert('Mapa salvo!', 'Percurso e checkpoints salvos com sucesso.', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
-    } catch {
-      Alert.alert('Erro', 'Não foi possível salvar o mapa.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // useMemo must be called before any early return (Rules of Hooks)
-  const distanceKm = useMemo(() => calcRouteDistanceKm(route), [route]);
-
-  if (loading || !race) return <Loading fullScreen />;
-
-  const initialRegion = {
-    latitude: checkpoints[0]?.latitude ?? -15.7801,
-    longitude: checkpoints[0]?.longitude ?? -47.9292,
-    latitudeDelta: 0.05,
-    longitudeDelta: 0.05,
-  };
-
-  const sortedCheckpoints = [...checkpoints].sort(
-    (a, b) => a.order - b.order
-  );
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={StyleSheet.absoluteFill}
-        provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-        initialRegion={initialRegion}
-        onPress={handleMapPress}
-        onRegionChangeComplete={(region) => { currentRegion.current = region; }}
-        showsUserLocation
-        showsMyLocationButton={false}
-      >
-        {/* Route polyline */}
-        {route.length > 1 && (
-          <Polyline
-            coordinates={route}
-            strokeColor={Colors.routeColor}
-            strokeWidth={4}
-          />
-        )}
+      {/* ── Map area (flex:1) ─────────────────────────────────────────── */}
+      <View style={styles.mapWrapper}>
+        <MapView
+          ref={mapRef}
+          style={StyleSheet.absoluteFill}
+          provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+          initialRegion={initialRegion}
+          onPress={handleMapPress}
+          onRegionChangeComplete={(r) => { currentRegion.current = r; }}
+          showsUserLocation
+          showsMyLocationButton={false}
+        >
+          {/* Route polyline */}
+          {route.length > 1 && (
+            <Polyline
+              coordinates={route}
+              strokeColor={Colors.routeColor}
+              strokeWidth={4}
+            />
+          )}
 
-        {/* Route dragging preview points */}
-        {mode === 'route' &&
-          route.map((pt, idx) => (
+          {/* Route dot markers (only in route mode) */}
+          {mode === 'route' && route.map((pt, idx) => (
             <Marker
               key={`rpt_${idx}`}
               coordinate={pt}
               anchor={{ x: 0.5, y: 0.5 }}
               onPress={() => {
                 if (idx === route.length - 1) {
-                  Alert.alert('Remover ponto?', '', [
-                    { text: 'Cancelar', style: 'cancel' },
-                    {
-                      text: 'Remover',
-                      onPress: () =>
-                        setRoute((prev) =>
-                          prev.filter((_, i) => i !== idx)
-                        ),
-                    },
-                  ]);
+                  setRoute((prev) => prev.slice(0, -1));
                 }
               }}
             >
-              <View
-                style={[
-                  styles.routePoint,
-                  idx === route.length - 1 && styles.routePointLast,
-                ]}
-              />
+              <View style={[styles.routeDot, idx === route.length - 1 && styles.routeDotLast]} />
             </Marker>
           ))}
 
-        {/* Checkpoints */}
-        {sortedCheckpoints.map((cp) => (
-          <React.Fragment key={cp.id}>
-            <Circle
-              center={{ latitude: cp.latitude, longitude: cp.longitude }}
-              radius={100}
-              strokeColor={
-                cp.isStart
-                  ? Colors.checkpointStart
-                  : cp.isFinish
-                  ? Colors.checkpointFinish
-                  : Colors.checkpointNormal
-              }
-              fillColor={
-                cp.isStart
-                  ? `${Colors.checkpointStart}25`
-                  : cp.isFinish
-                  ? `${Colors.checkpointFinish}25`
-                  : `${Colors.checkpointNormal}25`
-              }
-              strokeWidth={2}
-            />
-            <Marker
-              coordinate={{
-                latitude: cp.latitude,
-                longitude: cp.longitude,
-              }}
-              title={cp.name}
-              onPress={() => {
-                Alert.alert(cp.name, 'O que deseja fazer?', [
-                  { text: 'Cancelar', style: 'cancel' },
-                  {
-                    text: 'Remover',
-                    style: 'destructive',
-                    onPress: () => removeCheckpoint(cp.id),
-                  },
-                ]);
-              }}
-              pinColor={
-                cp.isStart
-                  ? Colors.checkpointStart
-                  : cp.isFinish
-                  ? Colors.checkpointFinish
-                  : Colors.checkpointNormal
-              }
-            />
-          </React.Fragment>
-        ))}
-      </MapView>
+          {/* Checkpoints */}
+          {sortedCps.map((cp) => {
+            const color = cp.isStart
+              ? Colors.checkpointStart
+              : cp.isFinish
+              ? Colors.checkpointFinish
+              : Colors.checkpointNormal;
 
-      {/* Top Bar */}
-      <SafeAreaView style={styles.topBar} edges={['top']}>
-        <View style={styles.topBarRow}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.topBtn}
-          >
-            <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
+            return (
+              <React.Fragment key={cp.id}>
+                <Circle
+                  center={{ latitude: cp.latitude, longitude: cp.longitude }}
+                  radius={100}
+                  strokeColor={color}
+                  fillColor={`${color}30`}
+                  strokeWidth={2}
+                />
+                <Marker
+                  coordinate={{ latitude: cp.latitude, longitude: cp.longitude }}
+                  title={cp.name}
+                  pinColor={color}
+                  onPress={() =>
+                    Alert.alert(cp.name, 'Remover este ponto?', [
+                      { text: 'Cancelar', style: 'cancel' },
+                      {
+                        text: 'Remover',
+                        style: 'destructive',
+                        onPress: () =>
+                          setCheckpoints((prev) =>
+                            prev
+                              .filter((c) => c.id !== cp.id)
+                              .map((c, idx) => ({ ...c, order: idx }))
+                          ),
+                      },
+                    ])
+                  }
+                />
+              </React.Fragment>
+            );
+          })}
+        </MapView>
+
+        {/* Top bar — overlaid only on the map, not on the controls below */}
+        <SafeAreaView style={styles.topBar} edges={['top']}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.topBtn}>
+            <Ionicons name="arrow-back" size={20} color="#FFF" />
           </TouchableOpacity>
+          <Text style={styles.topTitle} numberOfLines={1}>{race.name}</Text>
+          <View style={styles.topBtn} />
+        </SafeAreaView>
 
-          <Text style={styles.topTitle}>{race.name}</Text>
-
-          <TouchableOpacity
-            onPress={() => setShowHelp(!showHelp)}
-            style={styles.topBtn}
-          >
-            <Ionicons
-              name="help-circle-outline"
-              size={20}
-              color="#FFFFFF"
-            />
+        {/* Zoom controls (bottom-right of map) */}
+        <View style={styles.zoom}>
+          <TouchableOpacity style={styles.zoomBtn} onPress={zoomIn}>
+            <Ionicons name="add" size={22} color={Colors.text} />
+          </TouchableOpacity>
+          <View style={styles.zoomDivider} />
+          <TouchableOpacity style={styles.zoomBtn} onPress={zoomOut}>
+            <Ionicons name="remove" size={22} color={Colors.text} />
           </TouchableOpacity>
         </View>
-
-        {showHelp && (
-          <View style={styles.helpBox}>
-            <Text style={styles.helpText}>
-              • Selecione um modo abaixo e toque no mapa{'\n'}
-              • Raio de 100m ao redor de cada checkpoint{'\n'}
-              • Toque em um marcador para removê-lo{'\n'}
-              • Defina Largada e Chegada obrigatoriamente
-            </Text>
-          </View>
-        )}
-      </SafeAreaView>
-
-      {/* Zoom Controls */}
-      <View style={styles.zoomControls}>
-        <TouchableOpacity onPress={zoomIn} style={styles.zoomBtn}>
-          <Ionicons name="add" size={22} color={Colors.text} />
-        </TouchableOpacity>
-        <View style={styles.zoomDivider} />
-        <TouchableOpacity onPress={zoomOut} style={styles.zoomBtn}>
-          <Ionicons name="remove" size={22} color={Colors.text} />
-        </TouchableOpacity>
       </View>
 
-      {/* Mode Selector */}
-      <View style={styles.modeBar}>
-        {(Object.keys(modeConfig) as EditorMode[]).map((m) => {
-          const cfg = modeConfig[m];
-          const isActive = mode === m;
-          return (
-            <TouchableOpacity
-              key={m}
-              onPress={() => setMode(m)}
-              style={[styles.modeBtn, isActive && { borderColor: cfg.color }]}
-            >
-              <Ionicons
-                name={cfg.icon}
-                size={18}
-                color={isActive ? cfg.color : Colors.textMuted}
-              />
-              <Text
-                style={[
-                  styles.modeBtnText,
-                  isActive && { color: cfg.color, fontWeight: '700' },
-                ]}
-              >
-                {cfg.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* Bottom Panel */}
-      <View style={styles.bottomPanel}>
+      {/* ── Controls panel — BELOW the map, NO touch conflicts ────────── */}
+      <View style={styles.panel}>
         {/* Stats */}
         <View style={styles.stats}>
-          <View style={styles.stat}>
-            <Text style={[styles.statNum, { color: Colors.primary }]}>
-              {distanceKm < 1
-                ? `${Math.round(distanceKm * 1000)}m`
-                : `${distanceKm.toFixed(1)}km`}
-            </Text>
-            <Text style={styles.statLbl}>distância</Text>
-          </View>
-          <View style={styles.stat}>
-            <Text style={styles.statNum}>
-              {checkpoints.filter((c) => !c.isStart && !c.isFinish).length}
-            </Text>
-            <Text style={styles.statLbl}>checkpoints</Text>
-          </View>
-          <View style={styles.stat}>
-            <Text
-              style={[
-                styles.statNum,
-                {
-                  color: checkpoints.some((c) => c.isStart)
-                    ? Colors.success
-                    : Colors.error,
-                },
-              ]}
-            >
-              {checkpoints.some((c) => c.isStart) ? '✓' : '✗'}
-            </Text>
-            <Text style={styles.statLbl}>Largada</Text>
-          </View>
-          <View style={styles.stat}>
-            <Text
-              style={[
-                styles.statNum,
-                {
-                  color: checkpoints.some((c) => c.isFinish)
-                    ? Colors.success
-                    : Colors.error,
-                },
-              ]}
-            >
-              {checkpoints.some((c) => c.isFinish) ? '✓' : '✗'}
-            </Text>
-            <Text style={styles.statLbl}>Chegada</Text>
-          </View>
+          <StatItem
+            value={distanceKm < 1 ? `${Math.round(distanceKm * 1000)}m` : `${distanceKm.toFixed(1)}km`}
+            label="distância"
+            color={Colors.primary}
+          />
+          <StatItem
+            value={String(checkpoints.filter((c) => !c.isStart && !c.isFinish).length)}
+            label="checkpoints"
+          />
+          <StatItem
+            value={hasStart ? '✓' : '✗'}
+            label="Largada"
+            color={hasStart ? Colors.success : Colors.error}
+          />
+          <StatItem
+            value={hasFinish ? '✓' : '✗'}
+            label="Chegada"
+            color={hasFinish ? Colors.success : Colors.error}
+          />
         </View>
 
-        {/* Action Buttons */}
+        {/* Mode buttons */}
+        <View style={styles.modes}>
+          {MODES.map((item) => {
+            const active = mode === item.mode;
+            return (
+              <TouchableOpacity
+                key={item.mode}
+                style={[
+                  styles.modeBtn,
+                  active && { backgroundColor: `${item.color}18`, borderColor: item.color },
+                ]}
+                onPress={() => setMode(item.mode)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={item.icon}
+                  size={15}
+                  color={active ? item.color : Colors.textMuted}
+                />
+                <Text style={[styles.modeTxt, active && { color: item.color, fontWeight: '700' }]}>
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Action row */}
         <View style={styles.actionRow}>
           {mode === 'route' && route.length > 0 && (
             <TouchableOpacity
-              onPress={removeLastRoutePoint}
               style={[styles.actionBtn, { backgroundColor: Colors.warningBg }]}
+              onPress={() => setRoute((prev) => prev.slice(0, -1))}
             >
-              <Ionicons name="arrow-undo" size={16} color={Colors.warning} />
-              <Text style={[styles.actionBtnText, { color: Colors.warning }]}>
-                Desfazer
-              </Text>
+              <Ionicons name="arrow-undo" size={15} color={Colors.warning} />
+              <Text style={[styles.actionBtnTxt, { color: Colors.warning }]}>Desfazer</Text>
             </TouchableOpacity>
           )}
 
           {(route.length > 0 || checkpoints.length > 0) && (
             <TouchableOpacity
-              onPress={clearAll}
               style={[styles.actionBtn, { backgroundColor: Colors.errorBg }]}
+              onPress={() =>
+                Alert.alert('Limpar tudo?', 'Remove rota e todos os pontos.', [
+                  { text: 'Cancelar', style: 'cancel' },
+                  {
+                    text: 'Limpar',
+                    style: 'destructive',
+                    onPress: () => { setRoute([]); setCheckpoints([]); },
+                  },
+                ])
+              }
             >
-              <Ionicons name="trash-outline" size={16} color={Colors.error} />
-              <Text style={[styles.actionBtnText, { color: Colors.error }]}>
-                Limpar tudo
-              </Text>
+              <Ionicons name="trash-outline" size={15} color={Colors.error} />
+              <Text style={[styles.actionBtnTxt, { color: Colors.error }]}>Limpar</Text>
             </TouchableOpacity>
           )}
 
-          <Button
-            title="Salvar"
+          <TouchableOpacity
+            style={[styles.saveBtn, saving && { opacity: 0.6 }]}
             onPress={handleSave}
-            loading={saving}
-            size="sm"
-            icon={<Ionicons name="checkmark" size={16} color="#FFF" />}
-            style={{ flex: 1 }}
-          />
+            disabled={saving}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="checkmark" size={16} color="#FFF" />
+            <Text style={styles.saveBtnTxt}>{saving ? 'Salvando…' : 'Salvar mapa'}</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </View>
   );
 }
 
+// ─── Stat mini-component ──────────────────────────────────────────────────────
+
+function StatItem({
+  value,
+  label,
+  color = Colors.text,
+}: {
+  value: string;
+  label: string;
+  color?: string;
+}) {
+  return (
+    <View style={styles.stat}>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: Colors.background },
+  center: { justifyContent: 'center', alignItems: 'center', gap: 12, padding: 24 },
+  notFoundText: { fontSize: 16, color: Colors.textMuted },
+  backLink: {
+    marginTop: 12,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  backLinkText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+
+  // Map wrapper — takes all remaining space above the panel
+  mapWrapper: { flex: 1 },
+
   topBar: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
-  },
-  topBarRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
     gap: 12,
   },
   topBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.50)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -615,112 +497,90 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: '#FFF',
     textAlign: 'center',
     textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
-  helpBox: {
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 8,
-  },
-  helpText: { color: '#FFFFFF', fontSize: 13, lineHeight: 20 },
-  modeBar: {
+
+  zoom: {
     position: 'absolute',
-    left: 12,
-    top: 120,
-    gap: 8,
-  },
-  modeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    right: 12,
+    bottom: 12,
     backgroundColor: Colors.surface,
     borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 2,
-    borderColor: Colors.border,
+    overflow: 'hidden',
+    elevation: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.15,
     shadowRadius: 4,
-    elevation: 4,
   },
-  modeBtnText: { fontSize: 13, color: Colors.textMuted, fontWeight: '500' },
-  routePoint: {
+  zoomBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  zoomDivider: { height: 1, backgroundColor: Colors.border, marginHorizontal: 8 },
+
+  routeDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
     backgroundColor: Colors.routeColor,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
+    borderColor: '#FFF',
   },
-  routePointLast: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: Colors.primary,
-  },
-  bottomPanel: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+  routeDotLast: { width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.primary },
+
+  // Controls panel (NOT overlaid on map — placed below it)
+  panel: {
     backgroundColor: Colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 16,
-    paddingBottom: 32,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
+    gap: 12,
   },
-  stats: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 16,
-  },
+
+  stats: { flexDirection: 'row', justifyContent: 'space-around' },
   stat: { alignItems: 'center', gap: 2 },
-  statNum: { fontSize: 18, fontWeight: '800', color: Colors.text },
-  statLbl: { fontSize: 11, color: Colors.textMuted },
+  statValue: { fontSize: 18, fontWeight: '800' },
+  statLabel: { fontSize: 11, color: Colors.textMuted },
+
+  modes: { flexDirection: 'row', gap: 6 },
+  modeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceSecondary,
+  },
+  modeTxt: { fontSize: 11, color: Colors.textMuted, fontWeight: '600' },
+
   actionRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   actionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 10,
   },
-  actionBtnText: { fontSize: 13, fontWeight: '600' },
-  zoomControls: {
-    position: 'absolute',
-    right: 12,
-    top: 120,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 4,
-    overflow: 'hidden',
-  },
-  zoomBtn: {
-    width: 44,
-    height: 44,
+  actionBtnTxt: { fontSize: 13, fontWeight: '600' },
+
+  saveBtn: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
   },
-  zoomDivider: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginHorizontal: 8,
-  },
+  saveBtnTxt: { color: '#FFF', fontSize: 14, fontWeight: '700' },
 });
