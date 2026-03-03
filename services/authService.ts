@@ -82,7 +82,7 @@ export const authService = {
       age: data.age,
       sex: data.sex,
       isAdmin: data.isAdmin ?? false,
-      createdAt: data.createdAt?.toDate() ?? new Date(),
+      createdAt: typeof data.createdAt?.toDate === 'function' ? data.createdAt.toDate() : new Date(),
     };
   },
 
@@ -112,7 +112,7 @@ export const authService = {
       age: data.age,
       sex: data.sex,
       isAdmin: data.isAdmin ?? false,
-      createdAt: data.createdAt?.toDate() ?? new Date(),
+      createdAt: typeof data.createdAt?.toDate === 'function' ? data.createdAt.toDate() : new Date(),
     };
   },
 
@@ -132,7 +132,7 @@ export const authService = {
         age: data.age,
         sex: data.sex,
         isAdmin: true,
-        createdAt: data.createdAt?.toDate() ?? new Date(),
+        createdAt: typeof data.createdAt?.toDate === 'function' ? data.createdAt.toDate() : new Date(),
       };
     });
   },
