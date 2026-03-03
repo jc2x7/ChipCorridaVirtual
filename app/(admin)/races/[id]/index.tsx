@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Image,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,8 +15,12 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import * as ImagePicker from 'expo-image-picker';
-import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker, {
+  DateTimePickerEvent,
+} from '@react-native-community/datetimepicker';
 import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import { Ionicons } from '@expo/vector-icons';
 import { Race } from '@/types';
 import { raceService } from '@/services/raceService';
 import { Button } from '@/components/ui/Button';
@@ -24,10 +29,8 @@ import { Loading } from '@/components/ui/Loading';
 import { Colors } from '@/constants/colors';
 
 const schema = z.object({
-  name: z.string().min(3),
+  name: z.string().min(3, 'Nome deve ter no mínimo 3 caracteres'),
   description: z.string().optional(),
-  startDate: z.string().min(1),
-  startTime: z.string().min(1),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -36,8 +39,15 @@ export default function EditRaceScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [race, setRace] = useState<Race | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [saving, setSaving] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  // Date/time picker state
+  const [startDate, setStartDate] = useState<Date>(new Date());
+  const [startTimeDate, setStartTimeDate] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const {
     control,
@@ -48,19 +58,34 @@ export default function EditRaceScreen() {
 
   useEffect(() => {
     if (!id) return;
-    raceService.getRace(id).then((r) => {
-      setRace(r);
-      if (r) {
-        reset({
-          name: r.name,
-          description: r.description,
-          startDate: format(r.startTime, 'yyyy-MM-dd'),
-          startTime: format(r.startTime, 'HH:mm'),
-        });
-      }
-      setLoading(false);
-    });
+    raceService
+      .getRace(id)
+      .then((r) => {
+        if (r) {
+          setRace(r);
+          reset({ name: r.name, description: r.description });
+          setStartDate(r.startTime);
+          setStartTimeDate(r.startTime);
+        } else {
+          setNotFound(true);
+        }
+      })
+      .catch((err) => {
+        console.error('[EditRace] load error:', err);
+        setNotFound(true);
+      })
+      .finally(() => setLoading(false));
   }, [id]);
+
+  const onDateChange = (_event: DateTimePickerEvent, selected?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (selected) setStartDate(selected);
+  };
+
+  const onTimeChange = (_event: DateTimePickerEvent, selected?: Date) => {
+    if (Platform.OS === 'android') setShowTimePicker(false);
+    if (selected) setStartTimeDate(selected);
+  };
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -76,9 +101,13 @@ export default function EditRaceScreen() {
     if (!id || !race) return;
     setSaving(true);
     try {
-      const [year, month, day] = data.startDate.split('-').map(Number);
-      const [hour, minute] = data.startTime.split(':').map(Number);
-      const startTime = new Date(year, month - 1, day, hour, minute);
+      const startTime = new Date(
+        startDate.getFullYear(),
+        startDate.getMonth(),
+        startDate.getDate(),
+        startTimeDate.getHours(),
+        startTimeDate.getMinutes()
+      );
 
       const updates: Parameters<typeof raceService.updateRace>[1] = {
         name: data.name,
@@ -93,14 +122,27 @@ export default function EditRaceScreen() {
 
       await raceService.updateRace(id, updates);
       Alert.alert('Salvo!', 'Corrida atualizada com sucesso.');
-    } catch {
+    } catch (error) {
+      console.error('[EditRace] save error:', error);
       Alert.alert('Erro', 'Não foi possível salvar as alterações.');
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading || !race) return <Loading fullScreen />;
+  if (loading) return <Loading fullScreen />;
+
+  if (notFound || !race) {
+    return (
+      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Ionicons name="alert-circle-outline" size={48} color={Colors.textMuted} />
+        <Text style={{ fontSize: 16, color: Colors.textMuted, marginTop: 12 }}>
+          Corrida não encontrada
+        </Text>
+        <Button title="Voltar" onPress={() => router.back()} size="sm" style={{ marginTop: 16 }} />
+      </SafeAreaView>
+    );
+  }
 
   const photoSource = photoUri ?? race.photoUrl;
 
@@ -164,40 +206,77 @@ export default function EditRaceScreen() {
           )}
         />
 
-        <View style={styles.row}>
+        {/* Date & Time Pickers */}
+        <View style={styles.dateTimeRow}>
           <View style={{ flex: 1 }}>
-            <Controller
-              control={control}
-              name="startDate"
-              render={({ field: { onChange, value } }) => (
-                <Input
-                  label="Data de largada"
-                  value={value}
-                  onChangeText={onChange}
-                  hint="AAAA-MM-DD"
-                  leftIcon="calendar-outline"
-                  error={errors.startDate?.message}
-                />
-              )}
-            />
+            <Text style={styles.label}>Data de largada</Text>
+            <TouchableOpacity
+              onPress={() => setShowDatePicker(true)}
+              style={styles.pickerBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
+              <Text style={styles.pickerBtnText}>
+                {format(startDate, "dd 'de' MMM, yyyy", { locale: ptBR })}
+              </Text>
+            </TouchableOpacity>
           </View>
+
           <View style={{ flex: 1 }}>
-            <Controller
-              control={control}
-              name="startTime"
-              render={({ field: { onChange, value } }) => (
-                <Input
-                  label="Hora"
-                  value={value}
-                  onChangeText={onChange}
-                  hint="HH:MM"
-                  leftIcon="time-outline"
-                  error={errors.startTime?.message}
-                />
-              )}
-            />
+            <Text style={styles.label}>Hora</Text>
+            <TouchableOpacity
+              onPress={() => setShowTimePicker(true)}
+              style={styles.pickerBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="time-outline" size={18} color={Colors.primary} />
+              <Text style={styles.pickerBtnText}>
+                {format(startTimeDate, 'HH:mm')}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
+
+        {showDatePicker && (
+          <View style={styles.pickerContainer}>
+            <DateTimePicker
+              value={startDate}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+              onChange={onDateChange}
+              locale="pt-BR"
+            />
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                onPress={() => setShowDatePicker(false)}
+                style={styles.pickerDoneBtn}
+              >
+                <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {showTimePicker && (
+          <View style={styles.pickerContainer}>
+            <DateTimePicker
+              value={startTimeDate}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'clock'}
+              is24Hour
+              onChange={onTimeChange}
+              locale="pt-BR"
+            />
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                onPress={() => setShowTimePicker(false)}
+                style={styles.pickerDoneBtn}
+              >
+                <Text style={styles.pickerDoneBtnText}>Confirmar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {/* Quick Links */}
         <View style={styles.quickLinks}>
@@ -267,7 +346,50 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  row: { flexDirection: 'row', gap: 12 },
+  dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    marginBottom: 6,
+  },
+  pickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+  },
+  pickerBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  pickerContainer: {
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  pickerDoneBtn: {
+    alignSelf: 'flex-end',
+    backgroundColor: Colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  pickerDoneBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   quickLinks: {
     backgroundColor: Colors.surface,
     borderRadius: 16,

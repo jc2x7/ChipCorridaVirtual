@@ -37,10 +37,16 @@ export default function AdminRacesScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = raceService.subscribeToAllRaces((r) => {
-      setRaces(r);
-      setLoading(false);
-    });
+    const unsub = raceService.subscribeToAllRaces(
+      (r) => {
+        setRaces(r);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('[AdminRaces] subscription error:', error);
+        setLoading(false);
+      }
+    );
     return unsub;
   }, []);
 

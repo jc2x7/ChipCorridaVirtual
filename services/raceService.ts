@@ -148,14 +148,21 @@ export const raceService = {
     });
   },
 
-  subscribeToAllRaces(callback: (races: Race[]) => void) {
+  subscribeToAllRaces(callback: (races: Race[]) => void, onError?: (error: Error) => void) {
     const q = query(collection(db, 'races'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snap) => {
-      const races = snap.docs.map((d) =>
-        docToRace(d.id, d.data() as Record<string, unknown>)
-      );
-      callback(races);
-    });
+    return onSnapshot(
+      q,
+      (snap) => {
+        const races = snap.docs.map((d) =>
+          docToRace(d.id, d.data() as Record<string, unknown>)
+        );
+        callback(races);
+      },
+      (error) => {
+        console.error('[raceService.subscribeToAllRaces] error:', error);
+        onError?.(error);
+      }
+    );
   },
 
   async uploadRacePhoto(raceId: string, uri: string): Promise<string> {
