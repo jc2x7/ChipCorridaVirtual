@@ -62,8 +62,9 @@ export const authService = {
     };
   },
 
-  async login(email: string, password: string): Promise<void> {
-    await signInWithEmailAndPassword(auth, email, password);
+  async login(email: string, password: string): Promise<string> {
+    const credential = await signInWithEmailAndPassword(auth, email, password);
+    return credential.user.uid;
   },
 
   async logout(): Promise<void> {

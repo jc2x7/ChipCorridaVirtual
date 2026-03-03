@@ -41,10 +41,8 @@ export default function LoginScreen() {
   const onSubmit = async (data: FormData) => {
     setLoading(true);
     try {
-      await authService.login(data.email, data.password);
-      const user = await authService.getUserProfile(
-        (await authService.onAuthStateChanged((u) => u))?.uid ?? ''
-      );
+      const uid = await authService.login(data.email, data.password);
+      await authService.getUserProfile(uid);
       // Auth state listener in root layout will handle redirect
     } catch (error: unknown) {
       console.error('[LOGIN ERROR]', error);
