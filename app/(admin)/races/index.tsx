@@ -14,18 +14,19 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { Race, RaceStatus } from '@/types';
 import { raceService } from '@/services/raceService';
-import { Colors } from '@/constants/colors';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Loading } from '@/components/ui/Loading';
+import { Colors } from '@/constants/colors';
 
-const statusLabel: Record<RaceStatus, string> = {
+const STATUS_LABEL: Record<RaceStatus, string> = {
   draft: 'Rascunho',
   published: 'Publicada',
   active: 'Ao vivo',
   finished: 'Encerrada',
 };
-const statusVariant: Record<RaceStatus, 'default' | 'info' | 'success' | 'error'> = {
+
+const STATUS_VARIANT: Record<RaceStatus, 'default' | 'info' | 'success' | 'error'> = {
   draft: 'default',
   published: 'info',
   active: 'success',
@@ -35,42 +36,44 @@ const statusVariant: Record<RaceStatus, 'default' | 'info' | 'success' | 'error'
 export default function AdminRacesScreen() {
   const [races, setRaces] = useState<Race[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const unsub = raceService.subscribeToAllRaces(
-      (r) => {
-        setRaces(r);
+      (data) => {
+        setRaces(data);
         setLoading(false);
+        setError(false);
       },
-      (error) => {
-        console.error('[AdminRaces] subscription error:', error);
+      () => {
         setLoading(false);
+        setError(true);
       }
     );
     return unsub;
   }, []);
 
-  const handleStatusChange = (race: Race, newStatus: RaceStatus) => {
-    const labels: Record<RaceStatus, string> = {
-      draft: 'rascunho',
+  const confirmStatusChange = (race: Race, next: RaceStatus) => {
+    const action: Record<RaceStatus, string> = {
+      draft: 'mover para rascunho',
       published: 'publicar',
       active: 'iniciar',
       finished: 'encerrar',
     };
     Alert.alert(
       'Alterar status',
-      `Deseja ${labels[newStatus]} a corrida "${race.name}"?`,
+      `Deseja ${action[next]} a corrida "${race.name}"?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Confirmar',
-          onPress: () => raceService.updateRace(race.id, { status: newStatus }),
+          onPress: () => raceService.updateRace(race.id, { status: next }),
         },
       ]
     );
   };
 
-  const handleDelete = (race: Race) => {
+  const confirmDelete = (race: Race) => {
     Alert.alert(
       'Excluir corrida',
       `Tem certeza que quer excluir "${race.name}"? Esta ação não pode ser desfeita.`,
@@ -87,158 +90,105 @@ export default function AdminRacesScreen() {
 
   if (loading) return <Loading fullScreen />;
 
+  if (error) {
+    return (
+      <SafeAreaView style={[styles.container, styles.center]} edges={['bottom']}>
+        <Ionicons name="cloud-offline-outline" size={52} color={Colors.textMuted} />
+        <Text style={styles.errorTitle}>Erro ao carregar corridas</Text>
+        <Text style={styles.errorSub}>Verifique sua conexão e tente novamente</Text>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <View style={styles.header}>
-        <Text style={styles.count}>{races.length} corridas</Text>
+      <View style={styles.topBar}>
+        <Text style={styles.count}>{races.length} corrida{races.length !== 1 ? 's' : ''}</Text>
         <Button
           title="Nova corrida"
-          onPress={() => router.push('/(admin)/races/create')}
           size="sm"
           icon={<Ionicons name="add" size={16} color="#FFF" />}
+          onPress={() => router.push('/(admin)/races/create')}
         />
       </View>
 
       <FlatList
         data={races}
-        keyExtractor={(r) => r.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Ionicons name="flag-outline" size={48} color={Colors.textMuted} />
+            <Ionicons name="flag-outline" size={52} color={Colors.textMuted} />
             <Text style={styles.emptyText}>Nenhuma corrida criada</Text>
           </View>
         }
         renderItem={({ item: race }) => (
-          <View style={styles.raceCard}>
-            <View style={styles.raceHeader}>
-              <Text style={styles.raceName} numberOfLines={1}>
-                {race.name}
-              </Text>
-              <Badge
-                label={statusLabel[race.status]}
-                variant={statusVariant[race.status]}
-                size="sm"
-              />
+          <View style={styles.card}>
+            {/* Header */}
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardName} numberOfLines={1}>{race.name}</Text>
+              <Badge label={STATUS_LABEL[race.status]} variant={STATUS_VARIANT[race.status]} size="sm" />
             </View>
 
-            <Text style={styles.raceDate}>
-              {format(race.startTime, "dd MMM yyyy 'às' HH:mm", {
-                locale: ptBR,
-              })}
+            <Text style={styles.cardDate}>
+              {format(race.startTime, "dd MMM yyyy 'às' HH:mm", { locale: ptBR })}
             </Text>
-
-            <Text style={styles.raceMeta}>
-              {race.checkpoints.length} checkpoints •{' '}
-              {race.participantCount ?? 0} atletas
+            <Text style={styles.cardMeta}>
+              {race.checkpoints.length} checkpoint{race.checkpoints.length !== 1 ? 's' : ''}
+              {'  •  '}
+              {race.participantCount ?? 0} atleta{(race.participantCount ?? 0) !== 1 ? 's' : ''}
             </Text>
 
             {/* Actions */}
             <View style={styles.actions}>
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() =>
-                  router.push(`/(admin)/races/${race.id}/index`)
-                }
-              >
-                <Ionicons
-                  name="create-outline"
-                  size={18}
-                  color={Colors.textSecondary}
-                />
-                <Text style={styles.actionText}>Editar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() =>
-                  router.push(`/(admin)/races/${race.id}/map-editor`)
-                }
-              >
-                <Ionicons
-                  name="map-outline"
-                  size={18}
-                  color={Colors.textSecondary}
-                />
-                <Text style={styles.actionText}>Mapa</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() =>
-                  router.push(`/(admin)/races/${race.id}/participants`)
-                }
-              >
-                <Ionicons
-                  name="people-outline"
-                  size={18}
-                  color={Colors.textSecondary}
-                />
-                <Text style={styles.actionText}>Atletas</Text>
-              </TouchableOpacity>
+              <ActionBtn
+                icon="create-outline"
+                label="Editar"
+                onPress={() => router.push(`/(admin)/races/${race.id}`)}
+              />
+              <ActionBtn
+                icon="map-outline"
+                label="Mapa"
+                onPress={() => router.push(`/(admin)/races/${race.id}/map-editor`)}
+              />
+              <ActionBtn
+                icon="people-outline"
+                label="Atletas"
+                onPress={() => router.push(`/(admin)/races/${race.id}/participants`)}
+              />
 
               {race.status === 'draft' && (
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() => handleStatusChange(race, 'published')}
-                >
-                  <Ionicons
-                    name="globe-outline"
-                    size={18}
-                    color={Colors.secondary}
-                  />
-                  <Text style={[styles.actionText, { color: Colors.secondary }]}>
-                    Publicar
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              {race.status === 'published' && (
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() => handleStatusChange(race, 'active')}
-                >
-                  <Ionicons
-                    name="play-circle-outline"
-                    size={18}
-                    color={Colors.success}
-                  />
-                  <Text style={[styles.actionText, { color: Colors.success }]}>
-                    Iniciar
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              {race.status === 'active' && (
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() => handleStatusChange(race, 'finished')}
-                >
-                  <Ionicons
-                    name="stop-circle-outline"
-                    size={18}
-                    color={Colors.warning}
-                  />
-                  <Text style={[styles.actionText, { color: Colors.warning }]}>
-                    Encerrar
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() => handleDelete(race)}
-              >
-                <Ionicons
-                  name="trash-outline"
-                  size={18}
-                  color={Colors.error}
+                <ActionBtn
+                  icon="globe-outline"
+                  label="Publicar"
+                  color={Colors.secondary}
+                  onPress={() => confirmStatusChange(race, 'published')}
                 />
-                <Text style={[styles.actionText, { color: Colors.error }]}>
-                  Excluir
-                </Text>
-              </TouchableOpacity>
+              )}
+              {race.status === 'published' && (
+                <ActionBtn
+                  icon="play-circle-outline"
+                  label="Iniciar"
+                  color={Colors.success}
+                  onPress={() => confirmStatusChange(race, 'active')}
+                />
+              )}
+              {race.status === 'active' && (
+                <ActionBtn
+                  icon="stop-circle-outline"
+                  label="Encerrar"
+                  color={Colors.warning}
+                  onPress={() => confirmStatusChange(race, 'finished')}
+                />
+              )}
+
+              <ActionBtn
+                icon="trash-outline"
+                label="Excluir"
+                color={Colors.error}
+                onPress={() => confirmDelete(race)}
+              />
             </View>
           </View>
         )}
@@ -247,18 +197,38 @@ export default function AdminRacesScreen() {
   );
 }
 
+function ActionBtn({
+  icon,
+  label,
+  color = Colors.textSecondary,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  color?: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity style={styles.actionBtn} onPress={onPress} activeOpacity={0.7}>
+      <Ionicons name={icon} size={17} color={color} />
+      <Text style={[styles.actionLabel, { color }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: {
+  center: { justifyContent: 'center', alignItems: 'center', gap: 10 },
+  topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 12,
   },
-  count: { fontSize: 14, color: Colors.textSecondary, fontWeight: '600' },
-  list: { padding: 20, paddingTop: 0 },
-  raceCard: {
+  count: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
+  list: { paddingHorizontal: 20, paddingBottom: 24 },
+  card: {
     backgroundColor: Colors.surface,
     borderRadius: 16,
     padding: 16,
@@ -266,26 +236,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  raceHeader: {
+  cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
     marginBottom: 6,
-    gap: 8,
   },
-  raceName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.text,
-    flex: 1,
-  },
-  raceDate: { fontSize: 13, color: Colors.textSecondary, marginBottom: 4 },
-  raceMeta: { fontSize: 12, color: Colors.textMuted, marginBottom: 14 },
-  actions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  cardName: { fontSize: 16, fontWeight: '700', color: Colors.text, flex: 1 },
+  cardDate: { fontSize: 13, color: Colors.textSecondary, marginBottom: 2 },
+  cardMeta: { fontSize: 12, color: Colors.textMuted, marginBottom: 14 },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   actionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -295,7 +256,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: Colors.surfaceSecondary,
   },
-  actionText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  actionLabel: { fontSize: 12, fontWeight: '600' },
   empty: { alignItems: 'center', paddingVertical: 60, gap: 12 },
   emptyText: { fontSize: 16, color: Colors.textMuted },
+  errorTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
+  errorSub: { fontSize: 14, color: Colors.textMuted, textAlign: 'center', paddingHorizontal: 32 },
 });
