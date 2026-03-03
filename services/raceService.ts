@@ -4,13 +4,11 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
-  getDoc,
   getDocs,
   query,
   where,
   orderBy,
   onSnapshot,
-  serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
 import {
@@ -25,36 +23,41 @@ import { Race, Checkpoint, RoutePoint, RaceStatus } from '@/types';
 function docToRace(id: string, data: Record<string, unknown>): Race {
   return {
     id,
-    name: data.name as string,
-    description: data.description as string,
+    name: (data.name as string) ?? '',
+    description: (data.description as string) ?? '',
     photoUrl: (data.photoUrl as string) ?? '',
     startTime:
       data.startTime instanceof Timestamp
-        ? (data.startTime as Timestamp).toDate()
+        ? data.startTime.toDate()
         : new Date((data.startTime as string) ?? Date.now()),
     status: (data.status as RaceStatus) ?? 'draft',
-    createdBy: data.createdBy as string,
+    createdBy: (data.createdBy as string) ?? '',
     route: (data.route as RoutePoint[]) ?? [],
     checkpoints: (data.checkpoints as Checkpoint[]) ?? [],
     createdAt:
       data.createdAt instanceof Timestamp
-        ? (data.createdAt as Timestamp).toDate()
+        ? data.createdAt.toDate()
         : new Date(),
     participantCount: (data.participantCount as number) ?? 0,
   };
 }
 
 export const raceService = {
+  /* ─────────────────────────────────────────────────────── */
+  /*  Write                                                  */
+  /* ─────────────────────────────────────────────────────── */
+
   async createRace(
     createdBy: string,
-    data: {
-      name: string;
-      description: string;
-      startTime: Date;
-    }
+    data: { name: string; description: string; startTime: Date }
   ): Promise<string> {
+    // Use Timestamp.fromDate(new Date()) instead of serverTimestamp() so
+    // createdAt is never null locally — serverTimestamp() stays null until
+    // the server round-trip completes, which excludes the doc from
+    // orderBy('createdAt') queries and makes it "disappear" from the list.
     const payload = {
-      ...data,
+      name: data.name,
+      description: data.description,
       startTime: Timestamp.fromDate(data.startTime),
       status: 'draft',
       createdBy,
@@ -62,17 +65,10 @@ export const raceService = {
       route: [],
       checkpoints: [],
       participantCount: 0,
-      createdAt: serverTimestamp(),
+      createdAt: Timestamp.fromDate(new Date()),
     };
-    console.log('[raceService.createRace] payload:', JSON.stringify({ ...payload, startTime: payload.startTime.toDate().toISOString(), createdAt: 'serverTimestamp' }));
-    try {
-      const docRef = await addDoc(collection(db, 'races'), payload);
-      console.log('[raceService.createRace] success, docId:', docRef.id);
-      return docRef.id;
-    } catch (error) {
-      console.error('[raceService.createRace] Firestore error:', error);
-      throw error;
-    }
+    const docRef = await addDoc(collection(db, 'races'), payload);
+    return docRef.id;
   },
 
   async updateRace(
@@ -88,7 +84,7 @@ export const raceService = {
     }>
   ): Promise<void> {
     const payload: Record<string, unknown> = { ...updates };
-    if (updates.startTime) {
+    if (updates.startTime instanceof Date) {
       payload.startTime = Timestamp.fromDate(updates.startTime);
     }
     await updateDoc(doc(db, 'races', raceId), payload);
@@ -98,11 +94,9 @@ export const raceService = {
     await deleteDoc(doc(db, 'races', raceId));
   },
 
-  async getRace(raceId: string): Promise<Race | null> {
-    const snap = await getDoc(doc(db, 'races', raceId));
-    if (!snap.exists()) return null;
-    return docToRace(snap.id, snap.data() as Record<string, unknown>);
-  },
+  /* ─────────────────────────────────────────────────────── */
+  /*  Read (one-shot)                                        */
+  /* ─────────────────────────────────────────────────────── */
 
   async getPublishedRaces(): Promise<Race[]> {
     const q = query(
@@ -111,27 +105,35 @@ export const raceService = {
       orderBy('startTime', 'asc')
     );
     const snap = await getDocs(q);
-    return snap.docs.map((d) =>
-      docToRace(d.id, d.data() as Record<string, unknown>)
-    );
+    return snap.docs.map((d) => docToRace(d.id, d.data() as Record<string, unknown>));
   },
 
   async getAllRaces(): Promise<Race[]> {
-    const q = query(collection(db, 'races'), orderBy('createdAt', 'desc'));
-    const snap = await getDocs(q);
-    return snap.docs.map((d) =>
-      docToRace(d.id, d.data() as Record<string, unknown>)
-    );
+    const snap = await getDocs(collection(db, 'races'));
+    return snap.docs
+      .map((d) => docToRace(d.id, d.data() as Record<string, unknown>))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   },
 
-  subscribeToRace(raceId: string, callback: (race: Race | null) => void) {
-    return onSnapshot(doc(db, 'races', raceId), (snap) => {
-      if (!snap.exists()) {
-        callback(null);
-        return;
+  /* ─────────────────────────────────────────────────────── */
+  /*  Real-time subscriptions                               */
+  /* ─────────────────────────────────────────────────────── */
+
+  subscribeToRace(
+    raceId: string,
+    callback: (race: Race | null) => void,
+    onError?: (error: Error) => void
+  ) {
+    return onSnapshot(
+      doc(db, 'races', raceId),
+      (snap) => {
+        callback(snap.exists() ? docToRace(snap.id, snap.data() as Record<string, unknown>) : null);
+      },
+      (error) => {
+        console.error('[raceService.subscribeToRace] error:', error);
+        onError?.(error);
       }
-      callback(docToRace(snap.id, snap.data() as Record<string, unknown>));
-    });
+    );
   },
 
   subscribeToPublishedRaces(
@@ -146,10 +148,7 @@ export const raceService = {
     return onSnapshot(
       q,
       (snap) => {
-        const races = snap.docs.map((d) =>
-          docToRace(d.id, d.data() as Record<string, unknown>)
-        );
-        callback(races);
+        callback(snap.docs.map((d) => docToRace(d.id, d.data() as Record<string, unknown>)));
       },
       (error) => {
         console.error('[raceService.subscribeToPublishedRaces] error:', error);
@@ -158,14 +157,19 @@ export const raceService = {
     );
   },
 
-  subscribeToAllRaces(callback: (races: Race[]) => void, onError?: (error: Error) => void) {
-    const q = query(collection(db, 'races'), orderBy('createdAt', 'desc'));
+  subscribeToAllRaces(
+    callback: (races: Race[]) => void,
+    onError?: (error: Error) => void
+  ) {
+    // No orderBy here — orderBy('createdAt') would exclude any doc where
+    // createdAt is null/missing. We sort client-side instead so every race
+    // always shows up regardless of field presence.
     return onSnapshot(
-      q,
+      collection(db, 'races'),
       (snap) => {
-        const races = snap.docs.map((d) =>
-          docToRace(d.id, d.data() as Record<string, unknown>)
-        );
+        const races = snap.docs
+          .map((d) => docToRace(d.id, d.data() as Record<string, unknown>))
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         callback(races);
       },
       (error) => {
@@ -175,9 +179,13 @@ export const raceService = {
     );
   },
 
+  /* ─────────────────────────────────────────────────────── */
+  /*  Storage                                               */
+  /* ─────────────────────────────────────────────────────── */
+
   async uploadRacePhoto(raceId: string, uri: string): Promise<string> {
-    // fetch() + blob() doesn't work with local file URIs in React Native.
-    // XMLHttpRequest is the only reliable way to get a real Blob from a local URI.
+    // fetch().blob() doesn't work with local file URIs in React Native.
+    // XMLHttpRequest is the only reliable way to produce a valid Blob.
     const blob = await new Promise<Blob>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.onload = () => resolve(xhr.response as Blob);
@@ -189,7 +197,6 @@ export const raceService = {
     const storageRef = ref(storage, `races/${raceId}/cover.jpg`);
     await uploadBytes(storageRef, blob);
     const url = await getDownloadURL(storageRef);
-    // Release the blob memory
     (blob as unknown as { close?: () => void }).close?.();
     return url;
   },
@@ -198,7 +205,7 @@ export const raceService = {
     try {
       await deleteObject(ref(storage, `races/${raceId}/cover.jpg`));
     } catch {
-      // ignore if not found
+      // ignore — file may not exist
     }
   },
 };

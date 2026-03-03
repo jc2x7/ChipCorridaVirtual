@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -46,6 +46,10 @@ export default function EditRaceScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
+  // Track whether the form has been initialised so we don't reset it on
+  // every snapshot update while the user is editing.
+  const formReady = useRef(false);
+
   const { control, handleSubmit, reset, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
   });
@@ -57,22 +61,37 @@ export default function EditRaceScreen() {
       return;
     }
 
-    raceService.getRace(id)
-      .then((r) => {
+    // Use subscribeToRace (real-time) instead of getDoc (one-shot).
+    // getDoc can return "not found" when the auth token isn't ready yet
+    // at mount time. onSnapshot retries automatically and also reads from
+    // the local Firestore cache first, so it works even when the first
+    // server read is slow.
+    const unsub = raceService.subscribeToRace(
+      id,
+      (r) => {
         if (!r) {
           setLoadError('Corrida não encontrada.');
-        } else {
-          setRace(r);
-          reset({ name: r.name, description: r.description });
+          setLoading(false);
+          return;
+        }
+        setRace(r);
+        setLoadError(null);
+        // Only initialise the form once — don't overwrite while user edits
+        if (!formReady.current) {
+          reset({ name: r.name, description: r.description ?? '' });
           setStartDate(new Date(r.startTime));
           setStartTime(new Date(r.startTime));
+          formReady.current = true;
         }
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        setLoadError(msg);
-      })
-      .finally(() => setLoading(false));
+        setLoading(false);
+      },
+      (err) => {
+        setLoadError(err.message);
+        setLoading(false);
+      }
+    );
+
+    return unsub;
   }, [id]);
 
   const pickPhoto = async () => {
@@ -97,30 +116,22 @@ export default function EditRaceScreen() {
         startTime.getMinutes()
       );
 
+      const updates: Parameters<typeof raceService.updateRace>[1] = {
+        name: data.name.trim(),
+        description: data.description?.trim() ?? '',
+        startTime: combined,
+      };
+
       if (photoUri) {
         try {
           const url = await raceService.uploadRacePhoto(id, photoUri);
-          await raceService.updateRace(id, {
-            name: data.name.trim(),
-            description: data.description?.trim() ?? '',
-            startTime: combined,
-            photoUrl: url,
-          });
+          updates.photoUrl = url;
         } catch {
-          await raceService.updateRace(id, {
-            name: data.name.trim(),
-            description: data.description?.trim() ?? '',
-            startTime: combined,
-          });
+          // photo failed — save rest anyway
         }
-      } else {
-        await raceService.updateRace(id, {
-          name: data.name.trim(),
-          description: data.description?.trim() ?? '',
-          startTime: combined,
-        });
       }
 
+      await raceService.updateRace(id, updates);
       Alert.alert('Salvo!', 'Corrida atualizada com sucesso.');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -130,14 +141,15 @@ export default function EditRaceScreen() {
     }
   };
 
+  /* ── States ── */
   if (loading) return <Loading fullScreen />;
 
   if (loadError) {
     return (
       <SafeAreaView style={[styles.container, styles.center]}>
         <Ionicons name="alert-circle-outline" size={52} color={Colors.textMuted} />
-        <Text style={styles.errorTitle}>{loadError}</Text>
-        <Button title="Voltar" onPress={() => router.back()} size="sm" style={{ marginTop: 8 }} />
+        <Text style={styles.errorText}>{loadError}</Text>
+        <Button title="Voltar" onPress={() => router.back()} size="sm" style={{ marginTop: 12 }} />
       </SafeAreaView>
     );
   }
@@ -207,7 +219,7 @@ export default function EditRaceScreen() {
             <Text style={styles.label}>Data de largada</Text>
             <TouchableOpacity
               style={styles.pickerBtn}
-              onPress={() => setShowDatePicker(true)}
+              onPress={() => { setShowTimePicker(false); setShowDatePicker((v) => !v); }}
               activeOpacity={0.7}
             >
               <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
@@ -221,11 +233,11 @@ export default function EditRaceScreen() {
             <Text style={styles.label}>Hora</Text>
             <TouchableOpacity
               style={styles.pickerBtn}
-              onPress={() => setShowTimePicker(true)}
+              onPress={() => { setShowDatePicker(false); setShowTimePicker((v) => !v); }}
               activeOpacity={0.7}
             >
               <Ionicons name="time-outline" size={18} color={Colors.primary} />
-              <Text style={styles.pickerText}>{format(startTime, 'HH:mm')}</Text>
+              <Text style={styles.pickerText}>{format(startTime, "HH'h'mm")}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -354,7 +366,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 13,
   },
-  pickerText: { fontSize: 14, fontWeight: '600', color: Colors.text },
+  pickerText: { fontSize: 14, fontWeight: '600', color: Colors.text, flex: 1 },
 
   pickerCard: {
     backgroundColor: Colors.surface,
@@ -369,7 +381,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     borderRadius: 8,
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingVertical: 8,
     marginTop: 8,
   },
   doneBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
@@ -391,5 +403,5 @@ const styles = StyleSheet.create({
   quickLinkText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text },
   divider: { height: 1, backgroundColor: Colors.border, marginLeft: 48 },
 
-  errorTitle: { fontSize: 16, color: Colors.textMuted, textAlign: 'center' },
+  errorText: { fontSize: 16, color: Colors.textMuted, textAlign: 'center' },
 });
