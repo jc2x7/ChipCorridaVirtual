@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { Race, RaceStatus } from '@/types';
 import { raceService } from '@/services/raceService';
+import { useAuthStore } from '@/stores/authStore';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Loading } from '@/components/ui/Loading';
@@ -34,24 +35,38 @@ const STATUS_VARIANT: Record<RaceStatus, 'default' | 'info' | 'success' | 'error
 };
 
 export default function AdminRacesScreen() {
+  const { initialized } = useAuthStore();
   const [races, setRaces] = useState<Race[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setLoading(true);
+    setRetryKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
+    // Wait for Firebase Auth to finish restoring the session before
+    // opening a Firestore listener. Without this, the listener can fire
+    // with permission-denied (no auth token yet) and die permanently.
+    if (!initialized) return;
+
     const unsub = raceService.subscribeToAllRaces(
       (data) => {
         setRaces(data);
         setLoading(false);
-        setError(false);
+        setError(null);
       },
-      () => {
+      (err) => {
+        console.error('[AdminRaces] subscription error:', err);
         setLoading(false);
-        setError(true);
+        setError(err.message);
       }
     );
     return unsub;
-  }, []);
+  }, [initialized, retryKey]);
 
   const confirmStatusChange = (race: Race, next: RaceStatus) => {
     const action: Record<RaceStatus, string> = {
@@ -95,7 +110,11 @@ export default function AdminRacesScreen() {
       <SafeAreaView style={[styles.container, styles.center]} edges={['bottom']}>
         <Ionicons name="cloud-offline-outline" size={52} color={Colors.textMuted} />
         <Text style={styles.errorTitle}>Erro ao carregar corridas</Text>
-        <Text style={styles.errorSub}>Verifique sua conexão e tente novamente</Text>
+        <Text style={styles.errorSub}>{error}</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={retry}>
+          <Ionicons name="refresh-outline" size={16} color="#FFF" />
+          <Text style={styles.retryBtnText}>Tentar novamente</Text>
+        </TouchableOpacity>
       </SafeAreaView>
     );
   }
@@ -261,4 +280,15 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 16, color: Colors.textMuted },
   errorTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
   errorSub: { fontSize: 14, color: Colors.textMuted, textAlign: 'center', paddingHorizontal: 32 },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  retryBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
 });
