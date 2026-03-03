@@ -47,10 +47,11 @@ export default function LoginScreen() {
       );
       // Auth state listener in root layout will handle redirect
     } catch (error: unknown) {
-      const msg =
-        error instanceof Error && error.message.includes('invalid-credential')
-          ? 'Email ou senha incorretos.'
-          : 'Erro ao fazer login. Tente novamente.';
+      console.error('[LOGIN ERROR]', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const msg = errMsg.includes('invalid-credential')
+        ? 'Email ou senha incorretos.'
+        : `Erro ao fazer login: ${errMsg}`;
       Alert.alert('Erro', msg);
     } finally {
       setLoading(false);
